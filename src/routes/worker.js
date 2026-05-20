@@ -73,6 +73,44 @@ function parseSlugParam(req, res) {
   return slug;
 }
 
+workerRouter.get("/projects/:slug", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  const { rows } = await query(
+    `SELECT slug, name, scope_md FROM projects
+     WHERE tenant_id = $1 AND slug = $2`,
+    [req.workerTenantId, slug]
+  );
+  if (!rows[0]) {
+    return res.status(404).json({ error: "Projeto não encontrado" });
+  }
+  let scopeMd = rows[0].scope_md || "";
+  if (!scopeMd.trim()) {
+    const { readMacroScopeFromDisk } = await import("../lib/resolve-project-scope.js");
+    const fromDisk = readMacroScopeFromDisk(req.workerTenantId, slug);
+    if (fromDisk.scopeMd) {
+      scopeMd = fromDisk.scopeMd;
+    }
+  }
+  if (!scopeMd.trim()) {
+    const { rows: jobs } = await query(
+      `SELECT payload FROM jobs
+       WHERE tenant_id = $1 AND project_slug = $2 AND kind = 'provision'
+       ORDER BY created_at DESC LIMIT 1`,
+      [req.workerTenantId, slug]
+    );
+    const payload = jobs[0]?.payload;
+    if (payload && typeof payload === "object" && payload.scope) {
+      scopeMd = String(payload.scope);
+    }
+  }
+  res.json({
+    slug: rows[0].slug,
+    name: rows[0].name,
+    scopeMd,
+  });
+});
+
 workerRouter.put("/projects/:slug/dashboard", async (req, res) => {
   const slug = parseSlugParam(req, res);
   if (!slug) return;

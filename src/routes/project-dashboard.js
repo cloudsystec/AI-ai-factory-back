@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { emptyScopeState } from "../lib/empty-scope-state.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import {
@@ -25,13 +26,8 @@ projectDashboardRouter.get("/scope-state", async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
   const state = await getScopeStateSnapshot(req.user.tenantId, project);
-  if (!state) {
-    return res.json({
-      macroExists: false,
-      microExists: false,
-      backlogExists: false,
-      waves: [],
-    });
+  if (!state || typeof state !== "object" || !state.current) {
+    return res.json(emptyScopeState(project));
   }
   res.json(state);
 });

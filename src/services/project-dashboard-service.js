@@ -102,6 +102,23 @@ export async function upsertDashboardSnapshot(tenantId, projectSlug, tasks, scop
  * @param {string} taskId
  * @param {unknown} detail
  */
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function clearProjectDashboard(tenantId, projectSlug) {
+  await query(
+    `DELETE FROM project_task_details
+     WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
+  );
+  await query(
+    `DELETE FROM project_dashboard_snapshots
+     WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
+  );
+}
+
 export async function upsertTaskDetail(tenantId, projectSlug, taskId, detail) {
   await query(
     `INSERT INTO project_task_details

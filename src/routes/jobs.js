@@ -2,21 +2,44 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import {
+  readJobLogFull,
+  subscribeJobLogLive,
+} from "../lib/job-log-redis.js";
+import { isValidProjectSlug } from "../lib/project-slug.js";
+import {
+  completeJob,
   getActiveJobForTenant,
   getJobById,
   getJobLogs,
+  getLatestJobForProject,
   queueJob,
 } from "../services/job-service.js";
+
+function jobToJson(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    project: row.project_slug,
+    macroId: row.macro_id ?? null,
+    taskId: row.task_id ?? null,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at ?? null,
+    exitCode: row.exit_code ?? null,
+  };
+}
 
 export const jobsRouter = Router();
 jobsRouter.use(requireAuth, requireActivePlan);
 
-const VALID_KINDS = new Set([
-  "scope",
-  "scope-tasks-only",
-  "develop",
-  "task",
-]);
+const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+const LOG_POLL_MS = 2000;
+
+function countLogLines(text) {
+  if (!text) return 0;
+  return text.split("\n").length;
+}
 
 jobsRouter.post("/", async (req, res) => {
   try {
@@ -37,16 +60,16 @@ jobsRouter.post("/", async (req, res) => {
 
 jobsRouter.get("/active", async (req, res) => {
   const job = await getActiveJobForTenant(req.user.tenantId);
-  if (!job) return res.json({ job: null });
-  res.json({
-    job: {
-      id: job.id,
-      kind: job.kind,
-      project: job.project_slug,
-      status: job.status,
-      startedAt: job.started_at,
-    },
-  });
+  res.json({ job: jobToJson(job) });
+});
+
+jobsRouter.get("/latest", async (req, res) => {
+  const project = String(req.query.project ?? "").trim();
+  if (!project || !isValidProjectSlug(project)) {
+    return res.status(400).json({ error: "query project obrigatório (slug válido)" });
+  }
+  const job = await getLatestJobForProject(req.user.tenantId, project);
+  res.json({ job: jobToJson(job) });
 });
 
 jobsRouter.get("/:id/log", async (req, res) => {
@@ -76,48 +99,148 @@ async function authFromQueryOrHeader(req, res, next) {
 }
 
 jobsRouter.get("/:id/events", authFromQueryOrHeader, async (req, res) => {
-  const job = await getJobById(req.params.id);
+  const jobId = req.params.id;
+  const job = await getJobById(jobId);
   if (!job || job.tenant_id !== req.user.tenantId) {
     return res.status(404).json({ error: "Job não encontrado" });
   }
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
   const send = (payload) => {
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    if (!closed) {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  };
+
+  let closed = false;
+  let seenLineCount = 0;
+  let unsubscribe = async () => {};
+
+  const pushSnapshot = async () => {
+    try {
+      const snapshot = await readJobLogFull(jobId);
+      seenLineCount = countLogLines(snapshot);
+      send({ type: "snapshot", text: snapshot });
+      return snapshot;
+    } catch (e) {
+      console.warn(`[jobs/events] snapshot job=${jobId}:`, e.message);
+      send({ type: "snapshot", text: "" });
+      seenLineCount = 0;
+      return "";
+    }
+  };
+
+  const finish = async (exitPayload) => {
+    if (closed) return;
+    closed = true;
+    clearInterval(statusPoll);
+    clearInterval(logPoll);
+    clearInterval(heartbeat);
+    try {
+      await pushSnapshot();
+    } catch {
+      /* ignore */
+    }
+    if (exitPayload) send(exitPayload);
+    try {
+      await unsubscribe();
+    } catch {
+      /* ignore */
+    }
+    res.end();
   };
 
   send({ type: "status", status: job.status });
-  const snapshot = await getJobLogs(req.params.id);
-  send({ type: "snapshot", text: snapshot });
+  await pushSnapshot();
 
-  let lastId = 0;
-  const poll = setInterval(async () => {
-    const { query } = await import("../db/pool.js");
-    const { rows } = await query(
-      "SELECT id, line FROM job_log_lines WHERE job_id = $1 AND id > $2 ORDER BY id",
-      [req.params.id, lastId]
-    );
-    for (const row of rows) {
-      lastId = Number(row.id);
-      send({ type: "line", stream: "stdout", text: row.line });
-    }
-    const fresh = await getJobById(req.params.id);
-    if (
-      fresh &&
-      ["succeeded", "failed", "cancelled"].includes(fresh.status)
-    ) {
+  try {
+    unsubscribe = await subscribeJobLogLive(jobId, {
+      onMessage: (event) => {
+        if (closed) return;
+        if (event.type === "reset") {
+          seenLineCount = 0;
+          send({ type: "reset" });
+        } else if (event.type === "line" && typeof event.text === "string") {
+          const seq = event.seq;
+          if (typeof seq === "number" && seq < seenLineCount) {
+            return;
+          }
+          if (typeof seq === "number") {
+            seenLineCount = Math.max(seenLineCount, seq + 1);
+          } else {
+            seenLineCount += 1;
+          }
+          send({
+            type: "line",
+            stream: event.stream || "stdout",
+            text: event.text,
+            seq: event.seq,
+          });
+        } else if (event.type === "exit") {
+          send({
+            type: "exit",
+            code: event.code ?? null,
+            signal: event.signal ?? null,
+          });
+        } else if (event.type === "status" && event.status) {
+          send({ type: "status", status: event.status });
+        }
+      },
+      onError: (err) => {
+        console.warn(`[jobs/events] redis job=${jobId}:`, err.message);
+      },
+    });
+  } catch (e) {
+    console.warn(`[jobs/events] subscribe job=${jobId}:`, e.message);
+  }
+
+  const logPoll = setInterval(() => {
+    if (closed) return;
+    pushSnapshot().catch(() => {});
+  }, LOG_POLL_MS);
+
+  const heartbeat = setInterval(() => {
+    if (closed) return;
+    res.write(": ping\n\n");
+  }, 15000);
+
+  let lastPolledStatus = job.status;
+  const statusPoll = setInterval(async () => {
+    if (closed) return;
+    try {
+      const fresh = await getJobById(jobId);
+      if (!fresh || fresh.status === lastPolledStatus) return;
+      lastPolledStatus = fresh.status;
       send({ type: "status", status: fresh.status });
-      send({ type: "exit", code: fresh.exit_code, signal: null });
-      clearInterval(poll);
-      res.end();
+      if (TERMINAL_STATUSES.has(fresh.status)) {
+        await finish({
+          type: "exit",
+          code: fresh.exit_code ?? null,
+          signal: null,
+        });
+      }
+    } catch {
+      /* ignore */
     }
-  }, 500);
+  }, 1000);
 
-  req.on("close", () => clearInterval(poll));
+  req.on("close", () => {
+    closed = true;
+    clearInterval(statusPoll);
+    clearInterval(logPoll);
+    clearInterval(heartbeat);
+    unsubscribe().catch(() => {});
+  });
 });
 
 jobsRouter.post("/:id/cancel", async (req, res) => {
@@ -126,11 +249,31 @@ jobsRouter.post("/:id/cancel", async (req, res) => {
     return res.status(404).json({ error: "Job não encontrado" });
   }
   if (!["queued", "running", "waiting_input"].includes(job.status)) {
-    return res.status(400).json({ error: "Job já terminou" });
+    return res.status(409).json({
+      error: "Job já terminou",
+      job: jobToJson(job),
+    });
   }
-  const { query } = await import("../db/pool.js");
-  await query("UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE id = $1", [
-    req.params.id,
-  ]);
+  if (job.status === "queued") {
+    const { query } = await import("../db/pool.js");
+    await query(
+      "UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE id = $1",
+      [req.params.id]
+    );
+  } else {
+    await completeJob(req.user.tenantId, req.params.id, {
+      status: "cancelled",
+      exitCode: null,
+      costBaseUsd: 0,
+    });
+  }
   res.json({ ok: true, status: "cancelled" });
+});
+
+jobsRouter.get("/:id", async (req, res) => {
+  const job = await getJobById(req.params.id);
+  if (!job || job.tenant_id !== req.user.tenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  res.json({ job: jobToJson(job) });
 });

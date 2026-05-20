@@ -27,6 +27,12 @@ async function main() {
     `TENANT_ID=${tenantId}`,
     `BACK_URL=${process.env.PUBLIC_BACK_URL || "http://host.docker.internal:4000"}`,
     `WORKER_SECRET=${process.env.WORKER_SECRET || ""}`,
+    `REDIS_URL=${
+      process.env.TENANT_REDIS_URL ||
+      process.env.REDIS_URL_DOCKER ||
+      "redis://host.docker.internal:6379"
+    }`,
+    `CURSOR_AGENT_TRUST=${process.env.CURSOR_AGENT_TRUST ?? "1"}`,
   ];
 
   if (rows[0].cursor_api_key_encrypted) {

@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { canStartJob, computeCharge } from "../billing/index.js";
 import { query } from "../db/pool.js";
+import {
+  appendJobLogLine,
+  readJobLogFull,
+  setJobLogExpiry,
+} from "../lib/job-log-redis.js";
 
 const VALID_KINDS = new Set([
   "scope",
@@ -119,7 +124,7 @@ export async function claimJob(tenantId, workerId) {
       `SELECT id, project_slug, kind, macro_id, task_id, payload
        FROM jobs
        WHERE tenant_id = $1 AND status = 'queued'
-       ORDER BY created_at ASC
+       ORDER BY CASE WHEN kind = 'provision' THEN 0 ELSE 1 END, created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
       [tenantId]
@@ -162,10 +167,7 @@ export async function claimJob(tenantId, workerId) {
  * @param {string} line
  */
 export async function appendJobLog(jobId, line) {
-  await query(
-    "INSERT INTO job_log_lines (job_id, line) VALUES ($1, $2)",
-    [jobId, line]
-  );
+  await appendJobLogLine(jobId, line);
 }
 
 /**
@@ -223,6 +225,12 @@ export async function completeJob(tenantId, jobId, payload) {
     client.release();
   }
 
+  try {
+    await setJobLogExpiry(jobId);
+  } catch (e) {
+    console.warn("[completeJob] setJobLogExpiry:", e.message);
+  }
+
   return { cc, fee, cb };
 }
 
@@ -240,14 +248,38 @@ export async function getActiveJobForTenant(tenantId) {
 }
 
 /**
+ * Job ativo do projeto ou, se não houver, o mais recente (qualquer estado).
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function getLatestJobForProject(tenantId, projectSlug) {
+  const { rows: active } = await query(
+    `SELECT id, project_slug, kind, status, started_at, finished_at
+     FROM jobs
+     WHERE tenant_id = $1 AND project_slug = $2
+       AND status IN ('running', 'waiting_input', 'queued')
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  if (active[0]) return active[0];
+
+  const { rows } = await query(
+    `SELECT id, project_slug, kind, status, started_at, finished_at
+     FROM jobs
+     WHERE tenant_id = $1 AND project_slug = $2
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  return rows[0] || null;
+}
+
+/**
  * @param {string} jobId
  */
 export async function getJobLogs(jobId) {
-  const { rows } = await query(
-    "SELECT line FROM job_log_lines WHERE job_id = $1 ORDER BY id ASC",
-    [jobId]
-  );
-  return rows.map((r) => r.line).join("\n");
+  return readJobLogFull(jobId);
 }
 
 /**

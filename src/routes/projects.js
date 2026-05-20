@@ -3,6 +3,7 @@ import { query } from "../db/pool.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import { queueProvisionJob } from "../services/job-service.js";
+import { resetProjectPlanning } from "../services/project-reset-service.js";
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth, requireActivePlan);
@@ -46,8 +47,8 @@ projectsRouter.post("/", async (req, res) => {
 
   try {
     await query(
-      `INSERT INTO projects (tenant_id, slug, name) VALUES ($1, $2, $3)`,
-      [req.user.tenantId, trimmedSlug, trimmedName]
+      `INSERT INTO projects (tenant_id, slug, name, scope_md) VALUES ($1, $2, $3, $4)`,
+      [req.user.tenantId, trimmedSlug, trimmedName, trimmedScope]
     );
     const queued = await queueProvisionJob(req.user.tenantId, {
       slug: trimmedSlug,
@@ -69,6 +70,22 @@ projectsRouter.post("/", async (req, res) => {
       ).catch(() => {});
     }
     res.status(status).json({
+      error: error.message,
+      code: error.code,
+    });
+  }
+});
+
+projectsRouter.post("/:slug/reset", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const result = await resetProjectPlanning(req.user.tenantId, slug);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
       error: error.message,
       code: error.code,
     });

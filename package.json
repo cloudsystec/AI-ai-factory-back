@@ -5,11 +5,13 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test src/billing/billing.test.js",
+    "test": "node --test src/billing/billing.test.js src/lib/job-log-redis.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js",
     "db:migrate": "node src/db/migrate.js",
     "db:seed": "node scripts/seed.js",
     "db:seed-agents": "node scripts/seed-agent-templates.js",
-    "pull-tenant-env": "node scripts/pull-tenant-env.js"
+    "pull-tenant-env": "node scripts/pull-tenant-env.js",
+    "set-cursor-key": "node scripts/set-cursor-key.js",
+    "backfill-scope-md": "node scripts/backfill-scope-md.js"
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -17,6 +19,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.3",
+    "redis": "^4.7.0",
     "uuid": "^11.1.0"
   }
 }
