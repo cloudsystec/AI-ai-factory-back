@@ -1,0 +1,31 @@
+# Postgres local — cópia canónica também em repos/ai-factory-back (Fase 3).
+# Monorepo: npm run docker:postgres  |  deploy: usar repo ai-factory-back no Railway.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aifactory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  back:
+    profiles: [full]
+    build:
+      context: .
+      dockerfile: apps/back/Dockerfile
+    env_file: apps/back/.env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/aifactory
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:

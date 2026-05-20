@@ -1,0 +1,22 @@
+{
+  "name": "ai-factory-back",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test src/billing/billing.test.js",
+    "db:migrate": "node src/db/migrate.js",
+    "db:seed": "node scripts/seed.js",
+    "db:seed-agents": "node scripts/seed-agent-templates.js",
+    "pull-tenant-env": "node scripts/pull-tenant-env.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.3",
+    "uuid": "^11.1.0"
+  }
+}
