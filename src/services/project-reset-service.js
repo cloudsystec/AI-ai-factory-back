@@ -4,6 +4,8 @@ import { query } from "../db/pool.js";
 import { emptyScopeState } from "../lib/empty-scope-state.js";
 import { backupProjectToZip } from "../lib/project-backup.js";
 import { resolveProjectScopeMd } from "../lib/resolve-project-scope.js";
+import { writeProjectAgentsToDisk } from "../lib/write-project-agents-disk.js";
+import { resetProjectAgentsFromTemplates } from "./agent-config-service.js";
 import {
   tenantMacroDir,
   tenantWorkspacesDir,
@@ -90,6 +92,9 @@ export async function resetProjectPlanning(tenantId, slug) {
   const backup = backupProjectToZip(tenantId, slug, meta);
 
   resetProjectPlanningOnDisk(tenantId, slug, meta);
+
+  await resetProjectAgentsFromTemplates(tenantId, slug);
+  await writeProjectAgentsToDisk(tenantId, slug);
 
   await clearProjectDashboard(tenantId, slug);
   await upsertDashboardSnapshot(tenantId, slug, [], emptyScopeState(slug));

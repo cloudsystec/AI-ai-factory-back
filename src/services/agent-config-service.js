@@ -52,29 +52,50 @@ export async function seedAgentTemplatesFromRepo() {
 
 /**
  * @param {string} tenantId
+ * @param {string} projectSlug
  */
-export async function cloneAgentTemplatesToTenant(tenantId) {
+export async function cloneAgentTemplatesToProject(tenantId, projectSlug) {
   const { rows: templates } = await query(
     "SELECT role_key, content FROM agent_templates"
   );
   for (const t of templates) {
     await query(
-      `INSERT INTO tenant_agent_overrides (tenant_id, role_key, content)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id, role_key) DO NOTHING`,
-      [tenantId, t.role_key, t.content]
+      `INSERT INTO project_agent_overrides (tenant_id, project_slug, role_key, content)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, project_slug, role_key) DO NOTHING`,
+      [tenantId, projectSlug, t.role_key, t.content]
     );
   }
 }
 
 /**
+ * Garante overrides do projeto (clone lazy se vazio).
  * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function ensureProjectAgentOverrides(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT 1 FROM project_agent_overrides
+     WHERE tenant_id = $1 AND project_slug = $2 LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  if (!rows[0]) {
+    await cloneAgentTemplatesToProject(tenantId, projectSlug);
+  }
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
  * @returns {Promise<Record<string, string>>}
  */
-export async function getEffectiveAgentConfigForTenant(tenantId) {
+export async function getEffectiveAgentConfigForProject(tenantId, projectSlug) {
+  await ensureProjectAgentOverrides(tenantId, projectSlug);
+
   const { rows: overrides } = await query(
-    "SELECT role_key, content FROM tenant_agent_overrides WHERE tenant_id = $1",
-    [tenantId]
+    `SELECT role_key, content FROM project_agent_overrides
+     WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
   );
   if (overrides.length > 0) {
     return Object.fromEntries(overrides.map((r) => [r.role_key, r.content]));
@@ -113,40 +134,65 @@ export async function upsertAgentTemplate(roleKey, content, updatedBy) {
 
 /**
  * @param {string} tenantId
+ * @param {string} projectSlug
  */
-export async function listTenantAgentOverrides(tenantId) {
+export async function listProjectAgentOverrides(tenantId, projectSlug) {
+  await ensureProjectAgentOverrides(tenantId, projectSlug);
   const { rows } = await query(
-    `SELECT role_key, content, updated_at FROM tenant_agent_overrides
-     WHERE tenant_id = $1 ORDER BY role_key`,
-    [tenantId]
+    `SELECT role_key, content, updated_at FROM project_agent_overrides
+     WHERE tenant_id = $1 AND project_slug = $2 ORDER BY role_key`,
+    [tenantId, projectSlug]
   );
   return rows;
 }
 
 /**
  * @param {string} tenantId
+ * @param {string} projectSlug
  * @param {string} roleKey
  * @param {string} content
  */
-export async function upsertTenantAgentOverride(tenantId, roleKey, content) {
+export async function upsertProjectAgentOverride(
+  tenantId,
+  projectSlug,
+  roleKey,
+  content
+) {
+  await ensureProjectAgentOverrides(tenantId, projectSlug);
   const { rows } = await query(
-    `INSERT INTO tenant_agent_overrides (tenant_id, role_key, content, updated_at)
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT (tenant_id, role_key) DO UPDATE SET
+    `INSERT INTO project_agent_overrides (tenant_id, project_slug, role_key, content, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (tenant_id, project_slug, role_key) DO UPDATE SET
        content = EXCLUDED.content,
        updated_at = now()
      RETURNING *`,
-    [tenantId, roleKey, content]
+    [tenantId, projectSlug, roleKey, content]
   );
   return rows[0];
 }
 
 /**
  * @param {string} tenantId
+ * @param {string} projectSlug
  */
-export async function resetTenantAgentsFromTemplates(tenantId) {
-  await query("DELETE FROM tenant_agent_overrides WHERE tenant_id = $1", [
-    tenantId,
-  ]);
-  await cloneAgentTemplatesToTenant(tenantId);
+export async function resetProjectAgentsFromTemplates(tenantId, projectSlug) {
+  await query(
+    `DELETE FROM project_agent_overrides WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
+  );
+  await cloneAgentTemplatesToProject(tenantId, projectSlug);
+}
+
+/**
+ * Clona templates para todos os projetos existentes de um tenant (seed / migração manual).
+ * @param {string} tenantId
+ */
+export async function cloneAgentTemplatesToAllTenantProjects(tenantId) {
+  const { rows: projects } = await query(
+    "SELECT slug FROM projects WHERE tenant_id = $1",
+    [tenantId]
+  );
+  for (const p of projects) {
+    await cloneAgentTemplatesToProject(tenantId, p.slug);
+  }
 }

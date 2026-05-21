@@ -13,7 +13,8 @@ if (!tenantId) {
 
 async function main() {
   const { rows } = await query(
-    "SELECT id, cursor_api_key_encrypted FROM tenants WHERE id = $1",
+    `SELECT id, cursor_api_key_encrypted, cursor_admin_api_key_encrypted
+     FROM tenants WHERE id = $1`,
     [tenantId]
   );
   if (!rows[0]) {
@@ -37,6 +38,11 @@ async function main() {
 
   if (rows[0].cursor_api_key_encrypted) {
     lines.push(`CURSOR_API_KEY=${decrypt(rows[0].cursor_api_key_encrypted)}`);
+  }
+  if (rows[0].cursor_admin_api_key_encrypted) {
+    lines.push(
+      `CURSOR_ADMIN_API_KEY=${decrypt(rows[0].cursor_admin_api_key_encrypted)}`
+    );
   }
 
   const envPath = path.join(dir, ".env");

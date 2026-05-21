@@ -1,4 +1,10 @@
 import { query } from "../db/pool.js";
+import { getLatestJobForProject } from "./job-service.js";
+import {
+  readLiveScopeState,
+  readLiveTaskDetail,
+  readLiveTasks,
+} from "./workspace-dashboard-reader.js";
 
 /**
  * @param {string} tenantId
@@ -63,13 +69,111 @@ export async function setDevelopSettings(tenantId, projectSlug, autorun) {
  * @param {string} projectSlug
  * @param {string} taskId
  */
-export async function getTaskDetail(tenantId, projectSlug, taskId) {
+export async function getTaskDetailFromDb(tenantId, projectSlug, taskId) {
   const { rows } = await query(
     `SELECT detail_json FROM project_task_details
      WHERE tenant_id = $1 AND project_slug = $2 AND task_id = $3`,
     [tenantId, projectSlug, taskId]
   );
   return rows[0]?.detail_json ?? null;
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function buildDashboardMeta(tenantId, projectSlug, live) {
+  const job = await getLatestJobForProject(tenantId, projectSlug);
+  const activeStatuses = new Set(["running", "waiting_input", "queued"]);
+  const activeJobId =
+    job && activeStatuses.has(job.status) ? String(job.id) : null;
+  return { live: live === true, activeJobId };
+}
+
+function cacheSnapshotAsync(tenantId, projectSlug, tasks, scopeState) {
+  void upsertDashboardSnapshot(tenantId, projectSlug, tasks, scopeState).catch(
+    () => {}
+  );
+}
+
+function cacheTaskDetailAsync(tenantId, projectSlug, taskId, detail) {
+  void upsertTaskDetail(tenantId, projectSlug, taskId, detail).catch(() => {});
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {{ source?: string }} [opts]
+ */
+export async function getTasksForDashboard(tenantId, projectSlug, opts = {}) {
+  if (opts.source === "db") {
+    const tasks = await getTasksSnapshot(tenantId, projectSlug);
+    return { tasks, meta: await buildDashboardMeta(tenantId, projectSlug, false) };
+  }
+
+  const live = await readLiveTasks(tenantId, projectSlug);
+  if (live.ok) {
+    const meta = await buildDashboardMeta(tenantId, projectSlug, true);
+    const scopeLive = await readLiveScopeState(tenantId, projectSlug);
+    if (scopeLive.ok) {
+      cacheSnapshotAsync(tenantId, projectSlug, live.tasks, scopeLive.scopeState);
+    }
+    return { tasks: live.tasks, meta };
+  }
+
+  const tasks = await getTasksSnapshot(tenantId, projectSlug);
+  return { tasks, meta: await buildDashboardMeta(tenantId, projectSlug, false) };
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {{ source?: string }} [opts]
+ */
+export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}) {
+  if (opts.source === "db") {
+    const state = await getScopeStateSnapshot(tenantId, projectSlug);
+    const meta = await buildDashboardMeta(tenantId, projectSlug, false);
+    return state ? { ...state, dashboardMeta: meta } : null;
+  }
+
+  const live = await readLiveScopeState(tenantId, projectSlug);
+  if (live.ok && live.scopeState) {
+    const meta = await buildDashboardMeta(tenantId, projectSlug, true);
+    const tasksLive = await readLiveTasks(tenantId, projectSlug);
+    if (tasksLive.ok) {
+      cacheSnapshotAsync(
+        tenantId,
+        projectSlug,
+        tasksLive.tasks,
+        live.scopeState
+      );
+    }
+    return { ...live.scopeState, dashboardMeta: meta };
+  }
+
+  const state = await getScopeStateSnapshot(tenantId, projectSlug);
+  const meta = await buildDashboardMeta(tenantId, projectSlug, false);
+  return state ? { ...state, dashboardMeta: meta } : null;
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} taskId
+ */
+export async function getTaskDetail(tenantId, projectSlug, taskId) {
+  const live = await readLiveTaskDetail(tenantId, projectSlug, taskId);
+  if (live.ok && live.detail) {
+    cacheTaskDetailAsync(tenantId, projectSlug, taskId, live.detail);
+    return live.detail;
+  }
+
+  const fromDb = await getTaskDetailFromDb(tenantId, projectSlug, taskId);
+  if (fromDb) return fromDb;
+
+  if (live.ok && live.detail === null) return null;
+  return null;
 }
 
 /**

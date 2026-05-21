@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { requireWorker } from "../middleware/auth.js";
-import { getEffectiveAgentConfigForTenant } from "../services/agent-config-service.js";
+import {
+  getEffectiveAgentConfigForProject,
+  listAgentTemplates,
+} from "../services/agent-config-service.js";
 import { fileForRole } from "../lib/agent-roles.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import {
@@ -188,14 +191,44 @@ workerRouter.post("/jobs/:id/complete", async (req, res) => {
   res.json({ ok: true, billing: result });
 });
 
+/**
+ * @deprecated Rebuild da imagem ai-factory-cli. Usar GET /worker/projects/:slug/agents.
+ * Mantido para workers antigos que ainda fazem sync no startup para tenant/agents/.
+ */
 workerRouter.get("/tenant-config/agents", async (req, res) => {
-  const roles = await getEffectiveAgentConfigForTenant(req.workerTenantId);
+  const templates = await listAgentTemplates();
+  /** @type {Record<string, string>} */
+  const roles = {};
+  for (const t of templates) {
+    roles[t.role_key] = t.content;
+  }
+  const files = {};
+  for (const [roleKey, content] of Object.entries(roles)) {
+    files[fileForRole(roleKey)] = content;
+  }
+  res.json({
+    roles,
+    files,
+    deprecated: true,
+    hint: "Rebuild ai-factory-cli; agentes por projeto em /worker/projects/:slug/agents",
+  });
+});
+
+workerRouter.get("/projects/:slug/agents", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "slug inválido" });
+  }
+  const roles = await getEffectiveAgentConfigForProject(
+    req.workerTenantId,
+    slug
+  );
   /** @type {Record<string, string>} */
   const files = {};
   for (const [roleKey, content] of Object.entries(roles)) {
     files[fileForRole(roleKey)] = content;
   }
-  res.json({ roles, files });
+  res.json({ roles, files, projectSlug: slug });
 });
 
 workerRouter.post("/heartbeat", async (req, res) => {

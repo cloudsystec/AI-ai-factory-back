@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { listActiveJobsForTenant } from "../services/job-service.js";
 
 export const billingRouter = Router();
 billingRouter.use(requireAuth, requireActivePlan);
@@ -18,6 +19,17 @@ billingRouter.get("/summary", async (req, res) => {
     [req.user.tenantId]
   );
 
+  const activeRows = await listActiveJobsForTenant(req.user.tenantId);
+  const activeJobs = activeRows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    project: row.project_slug,
+    macroId: row.macro_id ?? null,
+    taskId: row.task_id ?? null,
+    status: row.status,
+    startedAt: row.started_at,
+  }));
+
   res.json({
     planId: t.plan_id,
     balanceUsd: balance,
@@ -28,5 +40,6 @@ billingRouter.get("/summary", async (req, res) => {
     agentSlotsInUse: t.agent_slots_in_use,
     workerStatus: t.worker_status,
     recentUsage: events,
+    activeJobs,
   });
 });

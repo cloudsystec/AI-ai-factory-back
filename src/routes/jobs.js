@@ -192,6 +192,8 @@ jobsRouter.get("/:id/events", authFromQueryOrHeader, async (req, res) => {
             code: event.code ?? null,
             signal: event.signal ?? null,
           });
+        } else if (event.type === "dashboard") {
+          send({ type: "dashboard" });
         } else if (event.type === "status" && event.status) {
           send({ type: "status", status: event.status });
         }

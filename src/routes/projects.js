@@ -3,6 +3,7 @@ import { query } from "../db/pool.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import { queueProvisionJob } from "../services/job-service.js";
+import { cloneAgentTemplatesToProject } from "../services/agent-config-service.js";
 import { resetProjectPlanning } from "../services/project-reset-service.js";
 
 export const projectsRouter = Router();
@@ -50,6 +51,7 @@ projectsRouter.post("/", async (req, res) => {
       `INSERT INTO projects (tenant_id, slug, name, scope_md) VALUES ($1, $2, $3, $4)`,
       [req.user.tenantId, trimmedSlug, trimmedName, trimmedScope]
     );
+    await cloneAgentTemplatesToProject(req.user.tenantId, trimmedSlug);
     const queued = await queueProvisionJob(req.user.tenantId, {
       slug: trimmedSlug,
       name: trimmedName,

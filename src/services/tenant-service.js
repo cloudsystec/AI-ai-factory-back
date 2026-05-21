@@ -1,6 +1,5 @@
 import { query } from "../db/pool.js";
 import { encrypt } from "../lib/crypto.js";
-import { cloneAgentTemplatesToTenant } from "./agent-config-service.js";
 
 const PLAN_LIMITS = {
   starter: { pool: 500, slots: 1 },
@@ -50,9 +49,7 @@ export async function upsertTenant(input) {
     [email, planId, until.toISOString(), balance, limits.pool, limits.slots, enc]
   );
 
-  const tenant = rows[0];
-  await cloneAgentTemplatesToTenant(tenant.id);
-  return tenant;
+  return rows[0];
 }
 
 /**
@@ -63,6 +60,18 @@ export async function setTenantCursorKey(tenantId, cursorApiKey) {
   const enc = encrypt(cursorApiKey);
   await query(
     "UPDATE tenants SET cursor_api_key_encrypted = $2, updated_at = now() WHERE id = $1",
+    [tenantId, enc]
+  );
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} cursorAdminApiKey
+ */
+export async function setTenantCursorAdminKey(tenantId, cursorAdminApiKey) {
+  const enc = encrypt(cursorAdminApiKey);
+  await query(
+    "UPDATE tenants SET cursor_admin_api_key_encrypted = $2, updated_at = now() WHERE id = $1",
     [tenantId, enc]
   );
 }

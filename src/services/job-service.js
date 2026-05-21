@@ -248,6 +248,21 @@ export async function getActiveJobForTenant(tenantId) {
 }
 
 /**
+ * Jobs ativos do tenant (um por slot em uso), ordenados por início.
+ * @param {string} tenantId
+ */
+export async function listActiveJobsForTenant(tenantId) {
+  const { rows } = await query(
+    `SELECT id, project_slug, kind, status, task_id, started_at, macro_id
+     FROM jobs
+     WHERE tenant_id = $1 AND status IN ('running', 'waiting_input', 'queued')
+     ORDER BY started_at ASC NULLS LAST, created_at ASC`,
+    [tenantId]
+  );
+  return rows;
+}
+
+/**
  * Job ativo do projeto ou, se não houver, o mais recente (qualquer estado).
  * @param {string} tenantId
  * @param {string} projectSlug

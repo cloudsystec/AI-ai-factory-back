@@ -5,12 +5,13 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test src/billing/billing.test.js src/lib/job-log-redis.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js",
+    "test": "node --test src/billing/billing.test.js src/lib/job-log-redis.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js src/services/workspace-dashboard-reader.test.js",
     "db:migrate": "node src/db/migrate.js",
     "db:seed": "node scripts/seed.js",
     "db:seed-agents": "node scripts/seed-agent-templates.js",
     "pull-tenant-env": "node scripts/pull-tenant-env.js",
     "set-cursor-key": "node scripts/set-cursor-key.js",
+    "set-cursor-admin-key": "node scripts/set-cursor-admin-key.js",
     "backfill-scope-md": "node scripts/backfill-scope-md.js"
   },
   "dependencies": {

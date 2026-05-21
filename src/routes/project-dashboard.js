@@ -3,10 +3,11 @@ import { emptyScopeState } from "../lib/empty-scope-state.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import {
+  buildDashboardMeta,
   getDevelopSettings,
-  getScopeStateSnapshot,
+  getScopeStateForDashboard,
   getTaskDetail,
-  getTasksSnapshot,
+  getTasksForDashboard,
   setDevelopSettings,
 } from "../services/project-dashboard-service.js";
 
@@ -25,9 +26,16 @@ function parseProject(req, res) {
 projectDashboardRouter.get("/scope-state", async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
-  const state = await getScopeStateSnapshot(req.user.tenantId, project);
+  const source =
+    req.query.source === "db" ? "db" : undefined;
+  const state = await getScopeStateForDashboard(req.user.tenantId, project, {
+    source,
+  });
   if (!state || typeof state !== "object" || !state.current) {
-    return res.json(emptyScopeState(project));
+    return res.json({
+      ...emptyScopeState(project),
+      dashboardMeta: await buildDashboardMeta(req.user.tenantId, project, false),
+    });
   }
   res.json(state);
 });
@@ -71,5 +79,8 @@ projectDashboardRouter.get("/task-detail", async (req, res) => {
 projectDashboardRouter.get("/tasks", async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
-  res.json(await getTasksSnapshot(req.user.tenantId, project));
+  const source = req.query.source === "db" ? "db" : undefined;
+  res.json(
+    await getTasksForDashboard(req.user.tenantId, project, { source })
+  );
 });

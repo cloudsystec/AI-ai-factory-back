@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { query, getPool } from "../src/db/pool.js";
 import {
-  cloneAgentTemplatesToTenant,
+  cloneAgentTemplatesToAllTenantProjects,
   seedAgentTemplatesFromRepo,
 } from "../src/services/agent-config-service.js";
 
@@ -43,7 +43,7 @@ async function main() {
   );
 
   const templateCount = await seedAgentTemplatesFromRepo();
-  await cloneAgentTemplatesToTenant(tenantId);
+  await cloneAgentTemplatesToAllTenantProjects(tenantId);
 
   console.log("Seed OK:", {
     tenantId,
