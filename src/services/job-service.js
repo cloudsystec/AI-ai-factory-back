@@ -18,8 +18,9 @@ const VALID_KINDS = new Set([
 /**
  * @param {string} tenantId
  * @param {{ kind: string, project: string, taskId?: string, tasksOnly?: boolean }} body
+ * @param {{ requestedByUserId?: string }} [opts]
  */
-export async function queueJob(tenantId, body) {
+export async function queueJob(tenantId, body, opts = {}) {
   let kind = body.kind;
   if (kind === "scope" && body.tasksOnly) kind = "scope-tasks-only";
   if (!VALID_KINDS.has(kind)) {
@@ -52,9 +53,10 @@ export async function queueJob(tenantId, body) {
     kind === "provision" && body.payload
       ? JSON.stringify(body.payload)
       : null;
+  const requestedBy = opts.requestedByUserId || null;
   await query(
-    `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, task_id, status, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7::jsonb)`,
+    `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, task_id, status, payload, requested_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7::jsonb, $8)`,
     [
       id,
       tenantId,
@@ -63,6 +65,7 @@ export async function queueJob(tenantId, body) {
       macroId,
       body.taskId || null,
       payload,
+      requestedBy,
     ]
   );
 
@@ -121,12 +124,14 @@ export async function claimJob(tenantId, workerId) {
   try {
     await client.query("BEGIN");
     const { rows: jobs } = await client.query(
-      `SELECT id, project_slug, kind, macro_id, task_id, payload
-       FROM jobs
-       WHERE tenant_id = $1 AND status = 'queued'
-       ORDER BY CASE WHEN kind = 'provision' THEN 0 ELSE 1 END, created_at ASC
+      `SELECT j.id, j.project_slug, j.kind, j.macro_id, j.task_id, j.payload,
+              j.requested_by_user_id, u.email AS requested_by_email
+       FROM jobs j
+       LEFT JOIN users u ON u.id = j.requested_by_user_id
+       WHERE j.tenant_id = $1 AND j.status = 'queued'
+       ORDER BY CASE WHEN j.kind = 'provision' THEN 0 ELSE 1 END, j.created_at ASC
        LIMIT 1
-       FOR UPDATE SKIP LOCKED`,
+       FOR UPDATE OF j SKIP LOCKED`,
       [tenantId]
     );
     if (!jobs[0]) {
@@ -134,6 +139,15 @@ export async function claimJob(tenantId, workerId) {
       return null;
     }
     const job = jobs[0];
+    if (job.kind !== "provision" && !job.requested_by_user_id) {
+      await client.query(
+        `UPDATE jobs SET status = 'failed', finished_at = now(),
+         exit_code = 1 WHERE id = $1`,
+        [job.id]
+      );
+      await client.query("COMMIT");
+      return null;
+    }
     await client.query(
       `UPDATE jobs SET status = 'running', worker_id = $2, started_at = now() WHERE id = $1`,
       [job.id, workerId]
@@ -196,16 +210,26 @@ export async function completeJob(tenantId, jobId, payload) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const { rows: jobMeta } = await client.query(
+      `SELECT u.email AS executor_email
+       FROM jobs j
+       LEFT JOIN users u ON u.id = j.requested_by_user_id
+       WHERE j.id = $1`,
+      [jobId]
+    );
+    const executorEmail = jobMeta[0]?.executor_email ?? null;
+
     await client.query(
       `UPDATE jobs SET status = $2, finished_at = now(), exit_code = $3,
        cost_base_usd = $4, charge_usd = $5 WHERE id = $1 AND tenant_id = $6`,
       [jobId, status, payload.exitCode ?? null, cb, cc, tenantId]
     );
     await client.query(
-      `INSERT INTO usage_events (tenant_id, execution_id, job_id, cost_base_usd, charge_usd, status)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO usage_events (
+         tenant_id, execution_id, job_id, cost_base_usd, charge_usd, status, executor_email
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (execution_id) DO NOTHING`,
-      [tenantId, executionId, jobId, cb, cc, billingStatus]
+      [tenantId, executionId, jobId, cb, cc, billingStatus, executorEmail]
     );
     await client.query(
       `UPDATE tenants SET balance_usd = balance_usd - $2,
@@ -253,10 +277,12 @@ export async function getActiveJobForTenant(tenantId) {
  */
 export async function listActiveJobsForTenant(tenantId) {
   const { rows } = await query(
-    `SELECT id, project_slug, kind, status, task_id, started_at, macro_id
-     FROM jobs
-     WHERE tenant_id = $1 AND status IN ('running', 'waiting_input', 'queued')
-     ORDER BY started_at ASC NULLS LAST, created_at ASC`,
+    `SELECT j.id, j.project_slug, j.kind, j.status, j.task_id, j.started_at, j.macro_id,
+            u.email AS executor_email
+     FROM jobs j
+     LEFT JOIN users u ON u.id = j.requested_by_user_id
+     WHERE j.tenant_id = $1 AND j.status IN ('running', 'waiting_input', 'queued')
+     ORDER BY j.started_at ASC NULLS LAST, j.created_at ASC`,
     [tenantId]
   );
   return rows;

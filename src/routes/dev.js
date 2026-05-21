@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { upsertTenant, setTenantCursorKey } from "../services/tenant-service.js";
+import { hashPassword } from "../lib/password.js";
+import { upsertTenant } from "../services/tenant-service.js";
 import { query } from "../db/pool.js";
 
 export const devRouter = Router();
@@ -17,21 +18,16 @@ devRouter.post("/seed-tenant", async (req, res) => {
     planId: req.body?.planId || "starter",
     planDays: req.body?.planDays ?? 30,
     balanceUsd: req.body?.balanceUsd,
-    cursorApiKey: req.body?.cursorApiKey,
   });
-  if (req.body?.email) {
-    await query(
-      `INSERT INTO users (tenant_id, email, role) VALUES ($1, $2, 'admin')
-       ON CONFLICT (tenant_id, email) DO NOTHING`,
-      [tenant.id, tenant.email]
-    );
-  }
-  res.json({ tenant });
-});
-
-devRouter.post("/tenants/:id/cursor-key", async (req, res) => {
-  const key = req.body?.cursorApiKey;
-  if (!key) return res.status(400).json({ error: "cursorApiKey obrigatório" });
-  await setTenantCursorKey(req.params.id, key);
-  res.json({ ok: true });
+  const email = req.body?.email || tenant.email;
+  const password = req.body?.password || "changeme123";
+  await query(
+    `INSERT INTO users (tenant_id, email, role, password_hash)
+     VALUES ($1, $2, 'auditor', $3)
+     ON CONFLICT (tenant_id, email) DO UPDATE SET
+       role = 'auditor',
+       password_hash = EXCLUDED.password_hash`,
+    [tenant.id, email, hashPassword(password)]
+  );
+  res.json({ tenant, email, role: "auditor" });
 });

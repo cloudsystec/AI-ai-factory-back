@@ -1,38 +1,28 @@
-import fs from "node:fs";
-import path from "node:path";
 import "dotenv/config";
-import dotenv from "dotenv";
 import { getPool } from "../src/db/pool.js";
-import { tenantDataRoot } from "../src/lib/tenant-paths.js";
-import { setTenantCursorKey } from "../src/services/tenant-service.js";
+import { setExecutorCursorApiKey } from "../src/services/user-service.js";
 
 const tenantId = process.argv[2];
-const keyArg = process.argv[3];
+const userId = process.argv[3];
+const keyArg = process.argv[4];
 
-if (!tenantId) {
-  console.error("Uso: node scripts/set-cursor-key.js <tenant-id> [cursor-api-key]");
-  console.error("  Se a key for omitida, lê CURSOR_API_KEY do .env do tenant no CLI.");
+if (!tenantId || !userId) {
+  console.error(
+    "Uso: node scripts/set-cursor-key.js <tenant-id> <user-id> [cursor-api-key]"
+  );
+  console.error("  Grava CURSOR_API_KEY no utilizador executor (não no tenant).");
   process.exit(1);
 }
 
 async function main() {
   let key = keyArg?.trim();
   if (!key) {
-    const envPath = path.join(tenantDataRoot(tenantId), ".env");
-    if (!fs.existsSync(envPath)) {
-      console.error("Sem key na linha de comando e .env do tenant inexistente:", envPath);
-      process.exit(1);
-    }
-    const parsed = dotenv.parse(fs.readFileSync(envPath, "utf-8"));
-    key = parsed.CURSOR_API_KEY?.trim();
-  }
-  if (!key) {
-    console.error("CURSOR_API_KEY não encontrada.");
+    console.error("Forneça a cursor-api-key como 4º argumento.");
     process.exit(1);
   }
 
-  await setTenantCursorKey(tenantId, key);
-  console.log("CURSOR_API_KEY gravada (encriptada) para tenant", tenantId);
+  await setExecutorCursorApiKey(tenantId, userId, key);
+  console.log("CURSOR_API_KEY gravada (encriptada) para executor", userId);
   await getPool().end();
 }
 

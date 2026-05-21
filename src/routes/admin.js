@@ -10,6 +10,17 @@ import {
   upsertAgentTemplate,
   upsertProjectAgentOverride,
 } from "../services/agent-config-service.js";
+import {
+  createTenantUser,
+  deleteTenantUser,
+  listTenantUsers,
+  setExecutorCursorApiKey,
+  setUserPassword,
+  setTenantUsersMax,
+  updateTenantUserRole,
+  ROLES,
+} from "../services/user-service.js";
+import { setTenantCursorAdminKey } from "../services/tenant-service.js";
 
 export const adminRouter = Router();
 adminRouter.use(requirePlatformAdmin);
@@ -41,7 +52,8 @@ async function assertTenantProject(tenantId, slug) {
 
 adminRouter.get("/tenants", async (_req, res) => {
   const { rows } = await query(
-    "SELECT id, email, plan_id, plan_active_until FROM tenants ORDER BY email"
+    `SELECT id, email, plan_id, plan_active_until, users_max
+     FROM tenants ORDER BY email`
   );
   res.json({ tenants: rows });
 });
@@ -128,6 +140,126 @@ adminRouter.put(
     }
   }
 );
+
+adminRouter.get("/tenants/:tenantId/users", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    res.json(await listTenantUsers(req.params.tenantId));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
+  }
+});
+
+adminRouter.post("/tenants/:tenantId/users", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    const user = await createTenantUser(
+      req.params.tenantId,
+      {
+        email: req.body?.email,
+        role: req.body?.role,
+        password: req.body?.password,
+      },
+      { allowedRoles: ROLES }
+    );
+    res.status(201).json({ user });
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      code: e.code,
+      usersUsed: e.usersUsed,
+      usersMax: e.usersMax,
+    });
+  }
+});
+
+adminRouter.patch("/tenants/:tenantId/users/:userId", async (req, res) => {
+  try {
+    const user = await updateTenantUserRole(
+      req.params.tenantId,
+      req.params.userId,
+      { role: req.body?.role },
+      { allowedRoles: ROLES }
+    );
+    res.json({ user });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.delete("/tenants/:tenantId/users/:userId", async (req, res) => {
+  try {
+    res.json(await deleteTenantUser(req.params.tenantId, req.params.userId));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.put("/tenants/:tenantId/users/:userId/password", async (req, res) => {
+  try {
+    res.json(
+      await setUserPassword(
+        req.params.tenantId,
+        req.params.userId,
+        req.body?.password
+      )
+    );
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.put("/tenants/:tenantId/users/:userId/cursor-api-key", async (req, res) => {
+  try {
+    res.json(
+      await setExecutorCursorApiKey(
+        req.params.tenantId,
+        req.params.userId,
+        req.body?.cursorApiKey
+      )
+    );
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.put("/tenants/:tenantId/cursor-admin-key", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    await setTenantCursorAdminKey(
+      req.params.tenantId,
+      req.body?.cursorAdminApiKey
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.patch("/tenants/:tenantId", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    if (req.body?.usersMax != null) {
+      const r = await setTenantUsersMax(req.params.tenantId, req.body.usersMax);
+      return res.json({ ok: true, ...r });
+    }
+    res.status(400).json({ error: "Nada para atualizar" });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
 
 adminRouter.post(
   "/tenants/:tenantId/projects/:slug/agents/reset",

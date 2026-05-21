@@ -1,6 +1,13 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import {
+  requireActivePlan,
+  requireAuth,
+  attachCapabilities,
+} from "../middleware/auth.js";
+import { getCapabilitiesForUser } from "../services/user-service.js";
+import { requireCapability } from "../middleware/permissions.js";
+import { assertExecutorCanRunJobs } from "../services/user-service.js";
 import {
   readJobLogFull,
   subscribeJobLogLive,
@@ -31,7 +38,7 @@ function jobToJson(row) {
 }
 
 export const jobsRouter = Router();
-jobsRouter.use(requireAuth, requireActivePlan);
+jobsRouter.use(requireAuth, attachCapabilities, requireActivePlan);
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const LOG_POLL_MS = 2000;
@@ -41,9 +48,12 @@ function countLogLines(text) {
   return text.split("\n").length;
 }
 
-jobsRouter.post("/", async (req, res) => {
+jobsRouter.post("/", requireCapability("execute"), async (req, res) => {
   try {
-    const result = await queueJob(req.user.tenantId, req.body ?? {});
+    await assertExecutorCanRunJobs(req.user.id);
+    const result = await queueJob(req.user.tenantId, req.body ?? {}, {
+      requestedByUserId: req.user.id,
+    });
     res.status(201).json({
       jobId: result.jobId,
       kind: result.kind,
@@ -91,7 +101,15 @@ async function authFromQueryOrHeader(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    req.user = { email: payload.sub, tenantId: payload.tenantId };
+    req.user = {
+      id: payload.userId,
+      email: payload.sub,
+      tenantId: payload.tenantId,
+      role: payload.role,
+    };
+    if (payload.userId) {
+      req.capabilities = await getCapabilitiesForUser(payload.userId);
+    }
     return requireActivePlan(req, res, next);
   } catch {
     return res.status(401).json({ error: "Token inválido" });
@@ -245,7 +263,7 @@ jobsRouter.get("/:id/events", authFromQueryOrHeader, async (req, res) => {
   });
 });
 
-jobsRouter.post("/:id/cancel", async (req, res) => {
+jobsRouter.post("/:id/cancel", requireCapability("execute"), async (req, res) => {
   const job = await getJobById(req.params.id);
   if (!job || job.tenant_id !== req.user.tenantId) {
     return res.status(404).json({ error: "Job não encontrado" });

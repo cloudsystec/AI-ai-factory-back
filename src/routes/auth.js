@@ -1,6 +1,13 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
-import { query } from "../db/pool.js";
+import { buildCapabilities } from "../lib/capabilities.js";
+import { verifyPassword } from "../lib/password.js";
+import {
+  getCapabilitiesForUser,
+  getTenantUserQuota,
+  loadUserByEmail,
+} from "../services/user-service.js";
+import { requireAuth, requireActivePlan, attachCapabilities } from "../middleware/auth.js";
 
 export const authRouter = Router();
 
@@ -14,36 +21,60 @@ authRouter.post("/login", async (req, res) => {
     return res.status(400).json({ error: "email e password obrigatórios" });
   }
 
-  const master = process.env.MASTER_PASSWORD;
-  if (!master || password !== master) {
+  const user = await loadUserByEmail(email);
+  if (!user) {
     return res.status(401).json({ error: "Credenciais inválidas" });
   }
 
-  const { rows } = await query(
-    `SELECT u.email, u.tenant_id, t.plan_active_until
-     FROM users u
-     JOIN tenants t ON t.id = u.tenant_id
-     WHERE u.email = $1`,
-    [email]
-  );
-
-  if (!rows[0]) {
-    return res.status(401).json({ error: "Utilizador não encontrado" });
-  }
-
-  if (new Date(rows[0].plan_active_until) < new Date()) {
+  if (new Date(user.plan_active_until) < new Date()) {
     return res.status(403).json({ code: "plan_inactive" });
   }
 
+  const master = process.env.MASTER_PASSWORD;
+  const okMaster = master && password === master;
+  const okPassword =
+    user.password_hash && verifyPassword(password, user.password_hash);
+
+  if (!okPassword && !okMaster) {
+    return res.status(401).json({ error: "Credenciais inválidas" });
+  }
+
   const token = jwt.sign(
-    { sub: rows[0].email, tenantId: rows[0].tenant_id },
+    {
+      sub: user.email,
+      tenantId: user.tenant_id,
+      userId: user.id,
+      role: user.role,
+    },
     process.env.JWT_SECRET || "dev-secret",
     { expiresIn: "7d" }
   );
 
+  const quota = await getTenantUserQuota(user.tenant_id);
+  const capabilities = buildCapabilities(user.role, {
+    usersUsed: quota?.usersUsed ?? 0,
+    usersMax: quota?.usersMax ?? 5,
+  });
+
   res.json({
     token,
-    email: rows[0].email,
-    tenantId: rows[0].tenant_id,
+    email: user.email,
+    tenantId: user.tenant_id,
+    userId: user.id,
+    role: user.role,
+    capabilities,
+  });
+});
+
+authRouter.get("/me", requireAuth, attachCapabilities, requireActivePlan, async (req, res) => {
+  const caps =
+    req.capabilities || (await getCapabilitiesForUser(req.user.id));
+  res.json({
+    email: req.user.email,
+    userId: req.user.id,
+    tenantId: req.user.tenantId,
+    role: req.user.role,
+    capabilities: caps,
+    planId: req.tenant.plan_id,
   });
 });

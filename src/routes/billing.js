@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
 import { listActiveJobsForTenant } from "../services/job-service.js";
+import { getTenantUserQuota } from "../services/user-service.js";
 
 export const billingRouter = Router();
-billingRouter.use(requireAuth, requireActivePlan);
+billingRouter.use(requireAuth, attachCapabilities, requireActivePlan);
 
 billingRouter.get("/summary", async (req, res) => {
   const t = req.tenant;
@@ -14,11 +15,16 @@ billingRouter.get("/summary", async (req, res) => {
   const pct = pool > 0 ? Math.round((used / pool) * 100) : 0;
 
   const { rows: events } = await query(
-    `SELECT execution_id, job_id, cost_base_usd, charge_usd, status, created_at
-     FROM usage_events WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 20`,
+    `SELECT ue.execution_id, ue.job_id, ue.cost_base_usd, ue.charge_usd, ue.status,
+            ue.created_at, ue.executor_email
+     FROM usage_events ue
+     WHERE ue.tenant_id = $1
+     ORDER BY ue.created_at DESC
+     LIMIT 20`,
     [req.user.tenantId]
   );
 
+  const quota = await getTenantUserQuota(req.user.tenantId);
   const activeRows = await listActiveJobsForTenant(req.user.tenantId);
   const activeJobs = activeRows.map((row) => ({
     id: row.id,
@@ -28,6 +34,7 @@ billingRouter.get("/summary", async (req, res) => {
     taskId: row.task_id ?? null,
     status: row.status,
     startedAt: row.started_at,
+    executorEmail: row.executor_email ?? null,
   }));
 
   res.json({
@@ -38,6 +45,8 @@ billingRouter.get("/summary", async (req, res) => {
     usedPercent: pct,
     agentSlotsMax: t.agent_slots_max,
     agentSlotsInUse: t.agent_slots_in_use,
+    usersMax: quota?.usersMax ?? t.users_max,
+    usersUsed: quota?.usersUsed ?? 0,
     workerStatus: t.worker_status,
     recentUsage: events,
     activeJobs,

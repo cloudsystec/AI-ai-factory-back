@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { requireCapability } from "../middleware/permissions.js";
 import { queueProvisionJob } from "../services/job-service.js";
 import { cloneAgentTemplatesToProject } from "../services/agent-config-service.js";
 import { resetProjectPlanning } from "../services/project-reset-service.js";
 
 export const projectsRouter = Router();
-projectsRouter.use(requireAuth, requireActivePlan);
+projectsRouter.use(requireAuth, attachCapabilities, requireActivePlan);
 
 projectsRouter.get("/", async (req, res) => {
   const { rows } = await query(
@@ -17,7 +18,7 @@ projectsRouter.get("/", async (req, res) => {
   res.json(rows.map((r) => r.slug));
 });
 
-projectsRouter.post("/", async (req, res) => {
+projectsRouter.post("/", requireCapability("write"), async (req, res) => {
   const { name, slug, scope } = req.body ?? {};
   const trimmedName = String(name ?? "").trim();
   const trimmedSlug = String(slug ?? "").trim();
@@ -78,7 +79,7 @@ projectsRouter.post("/", async (req, res) => {
   }
 });
 
-projectsRouter.post("/:slug/reset", async (req, res) => {
+projectsRouter.post("/:slug/reset", requireCapability("write"), async (req, res) => {
   const slug = String(req.params.slug ?? "").trim();
   if (!isValidProjectSlug(slug)) {
     return res.status(400).json({ error: "Slug inválido" });

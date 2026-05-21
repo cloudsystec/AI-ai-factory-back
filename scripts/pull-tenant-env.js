@@ -13,7 +13,7 @@ if (!tenantId) {
 
 async function main() {
   const { rows } = await query(
-    `SELECT id, cursor_api_key_encrypted, cursor_admin_api_key_encrypted
+    `SELECT id, cursor_admin_api_key_encrypted
      FROM tenants WHERE id = $1`,
     [tenantId]
   );
@@ -36,9 +36,6 @@ async function main() {
     `CURSOR_AGENT_TRUST=${process.env.CURSOR_AGENT_TRUST ?? "1"}`,
   ];
 
-  if (rows[0].cursor_api_key_encrypted) {
-    lines.push(`CURSOR_API_KEY=${decrypt(rows[0].cursor_api_key_encrypted)}`);
-  }
   if (rows[0].cursor_admin_api_key_encrypted) {
     lines.push(
       `CURSOR_ADMIN_API_KEY=${decrypt(rows[0].cursor_admin_api_key_encrypted)}`
@@ -48,6 +45,9 @@ async function main() {
   const envPath = path.join(dir, ".env");
   fs.writeFileSync(envPath, lines.join("\n") + "\n", "utf-8");
   console.log("Escrito:", envPath);
+  console.log(
+    "Nota: CURSOR_API_KEY por executor é enviada no claim de cada job (não no .env)."
+  );
   await getPool().end();
 }
 

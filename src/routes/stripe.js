@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
+import { hashPassword } from "../lib/password.js";
 import { upsertTenant } from "../services/tenant-service.js";
 
 export const stripeRouter = Router();
@@ -33,10 +34,17 @@ stripeRouter.post("/webhooks/stripe", async (req, res) => {
           email,
           planId: event.data?.object?.metadata?.plan_id || "starter",
         });
+        const tempPassword =
+          event.data?.object?.metadata?.temp_password ||
+          process.env.STRIPE_DEFAULT_USER_PASSWORD;
+        const passwordHash = tempPassword
+          ? hashPassword(String(tempPassword))
+          : null;
         await query(
-          `INSERT INTO users (tenant_id, email, role) VALUES ($1, $2, 'admin')
+          `INSERT INTO users (tenant_id, email, role, password_hash)
+           VALUES ($1, $2, 'auditor', $3)
            ON CONFLICT (tenant_id, email) DO NOTHING`,
-          [tenant.id, tenant.email]
+          [tenant.id, tenant.email, passwordHash]
         );
       }
     }

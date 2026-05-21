@@ -12,6 +12,7 @@ import {
   claimJob,
   completeJob,
 } from "../services/job-service.js";
+import { getExecutorCursorApiKeyDecrypted } from "../services/user-service.js";
 import {
   getDevelopSettings,
   setDevelopSettings,
@@ -55,6 +56,26 @@ workerRouter.post("/claim", async (req, res) => {
   const workerId = req.body?.workerId || "default";
   const job = await claimJob(req.workerTenantId, workerId);
   if (!job) return res.json({ job: null });
+
+  let cursorApiKey = null;
+  if (job.requested_by_user_id && job.kind !== "provision") {
+    cursorApiKey = await getExecutorCursorApiKeyDecrypted(
+      job.requested_by_user_id
+    );
+    if (!cursorApiKey) {
+      await completeJob(req.workerTenantId, job.id, {
+        status: "failed",
+        exitCode: 1,
+        costBaseUsd: 0,
+      });
+      return res.json({
+        job: null,
+        error: "executor_cursor_key_missing",
+        jobId: job.id,
+      });
+    }
+  }
+
   res.json({
     job: {
       id: job.id,
@@ -63,6 +84,9 @@ workerRouter.post("/claim", async (req, res) => {
       macroId: job.macro_id,
       taskId: job.task_id,
       payload: job.payload ?? null,
+      requestedByUserId: job.requested_by_user_id ?? null,
+      requestedByEmail: job.requested_by_email ?? null,
+      cursorApiKey,
     },
   });
 });

@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { emptyScopeState } from "../lib/empty-scope-state.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { requireCapability } from "../middleware/permissions.js";
 import {
   buildDashboardMeta,
   getDevelopSettings,
@@ -12,7 +13,7 @@ import {
 } from "../services/project-dashboard-service.js";
 
 export const projectDashboardRouter = Router();
-projectDashboardRouter.use(requireAuth, requireActivePlan);
+projectDashboardRouter.use(requireAuth, attachCapabilities, requireActivePlan);
 
 function parseProject(req, res) {
   const project = req.query.project ?? req.body?.project;
@@ -46,7 +47,7 @@ projectDashboardRouter.get("/develop-settings", async (req, res) => {
   res.json(await getDevelopSettings(req.user.tenantId, project));
 });
 
-projectDashboardRouter.put("/develop-settings", async (req, res) => {
+projectDashboardRouter.put("/develop-settings", requireCapability("write"), async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
   const { autorun } = req.body ?? {};
