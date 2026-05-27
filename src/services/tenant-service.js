@@ -17,10 +17,11 @@ export function limitsForPlan(planId) {
 }
 
 /**
- * @param {{ email: string, planId?: string, planDays?: number, balanceUsd?: number }} input
+ * @param {{ email: string, name?: string, planId?: string, planDays?: number, balanceUsd?: number }} input
  */
 export async function upsertTenant(input) {
   const email = String(input.email).trim().toLowerCase();
+  const name = String(input.name ?? "").trim();
   const planId = input.planId || "starter";
   const limits = limitsForPlan(planId);
   const days = input.planDays ?? 30;
@@ -30,10 +31,11 @@ export async function upsertTenant(input) {
 
   const { rows } = await query(
     `INSERT INTO tenants (
-      email, plan_id, plan_active_until, balance_usd, pool_credit_cycle_usd,
+      email, name, plan_id, plan_active_until, balance_usd, pool_credit_cycle_usd,
       agent_slots_max, users_max
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     ON CONFLICT (email) DO UPDATE SET
+      name = COALESCE(NULLIF(EXCLUDED.name, ''), tenants.name),
       plan_id = EXCLUDED.plan_id,
       plan_active_until = EXCLUDED.plan_active_until,
       balance_usd = COALESCE(EXCLUDED.balance_usd, tenants.balance_usd),
@@ -44,6 +46,7 @@ export async function upsertTenant(input) {
     RETURNING *`,
     [
       email,
+      name,
       planId,
       until.toISOString(),
       balance,

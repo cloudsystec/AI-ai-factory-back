@@ -50,11 +50,22 @@ projectDashboardRouter.get("/develop-settings", async (req, res) => {
 projectDashboardRouter.put("/develop-settings", requireCapability("write"), async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
-  const { autorun } = req.body ?? {};
-  if (typeof autorun !== "boolean") {
-    return res.status(400).json({ error: "autorun boolean obrigatório" });
+  const { autorun, skipHumanApproval } = req.body ?? {};
+  if (typeof autorun !== "boolean" && typeof skipHumanApproval !== "boolean") {
+    return res.status(400).json({
+      error: "Indique autorun e/ou skipHumanApproval (boolean)",
+    });
   }
-  res.json(await setDevelopSettings(req.user.tenantId, project, autorun));
+  const current = await getDevelopSettings(req.user.tenantId, project);
+  res.json(
+    await setDevelopSettings(req.user.tenantId, project, {
+      autorun: typeof autorun === "boolean" ? autorun === true : current.autorun,
+      skipHumanApproval:
+        typeof skipHumanApproval === "boolean"
+          ? skipHumanApproval === true
+          : current.skipHumanApproval,
+    })
+  );
 });
 
 projectDashboardRouter.get("/task-detail", async (req, res) => {

@@ -35,6 +35,7 @@ billingRouter.get("/summary", async (req, res) => {
     status: row.status,
     startedAt: row.started_at,
     executorEmail: row.executor_email ?? null,
+    workerSlot: row.worker_slot ?? null,
   }));
 
   res.json({

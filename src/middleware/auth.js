@@ -28,6 +28,7 @@ export async function requireAuth(req, res, next) {
         id: user.id,
         email: user.email,
         tenantId: user.tenant_id,
+        tenantName: user.tenant_name || "",
         role: user.role,
       };
     } else if (email && tenantId) {
@@ -66,7 +67,7 @@ export async function attachCapabilities(req, res, next) {
  */
 export async function requireActivePlan(req, res, next) {
   const { rows } = await query(
-    `SELECT id, plan_active_until, balance_usd, agent_slots_max,
+    `SELECT id, name, plan_active_until, balance_usd, agent_slots_max,
             agent_slots_in_use, has_active_job, pool_credit_cycle_usd, plan_id,
             users_max
      FROM tenants WHERE id = $1`,

@@ -32,6 +32,7 @@ stripeRouter.post("/webhooks/stripe", async (req, res) => {
       if (email) {
         const tenant = await upsertTenant({
           email,
+          name: event.data?.object?.metadata?.company_name || "",
           planId: event.data?.object?.metadata?.plan_id || "starter",
         });
         const tempPassword =

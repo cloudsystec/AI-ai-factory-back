@@ -20,7 +20,10 @@ import {
   updateTenantUserRole,
   ROLES,
 } from "../services/user-service.js";
-import { setTenantCursorAdminKey } from "../services/tenant-service.js";
+import {
+  setTenantCursorAdminKey,
+  upsertTenant,
+} from "../services/tenant-service.js";
 
 export const adminRouter = Router();
 adminRouter.use(requirePlatformAdmin);
@@ -52,10 +55,42 @@ async function assertTenantProject(tenantId, slug) {
 
 adminRouter.get("/tenants", async (_req, res) => {
   const { rows } = await query(
-    `SELECT id, email, plan_id, plan_active_until, users_max
-     FROM tenants ORDER BY email`
+    `SELECT id, email, name, plan_id, plan_active_until, users_max
+     FROM tenants ORDER BY COALESCE(NULLIF(name, ''), email)`
   );
   res.json({ tenants: rows });
+});
+
+adminRouter.post("/tenants", async (req, res) => {
+  try {
+    const { email, name, planId, planDays, auditorEmail, auditorPassword } =
+      req.body || {};
+
+    if (!email || !name) {
+      return res
+        .status(400)
+        .json({ error: "email e name da empresa são obrigatórios" });
+    }
+    if (!auditorEmail || !auditorPassword) {
+      return res
+        .status(400)
+        .json({ error: "auditorEmail e auditorPassword são obrigatórios" });
+    }
+
+    const tenant = await upsertTenant({ email, name, planId, planDays });
+
+    const auditor = await createTenantUser(
+      tenant.id,
+      { email: auditorEmail, role: "auditor", password: auditorPassword },
+      { allowedRoles: ROLES }
+    );
+
+    res.status(201).json({ tenant, auditor });
+  } catch (e) {
+    res
+      .status(e.status || 500)
+      .json({ error: e.message, code: e.code });
+  }
 });
 
 adminRouter.get("/tenants/:tenantId/projects", async (req, res) => {

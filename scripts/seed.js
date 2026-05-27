@@ -20,10 +20,11 @@ async function main() {
 
   await query(
     `INSERT INTO tenants (
-      id, email, plan_id, plan_active_until, balance_usd, pool_credit_cycle_usd,
+      id, email, name, plan_id, plan_active_until, balance_usd, pool_credit_cycle_usd,
       agent_slots_max, users_max, worker_status
-    ) VALUES ($1, $2, 'starter', $3, 500, 500, $4, $5, 'offline')
+    ) VALUES ($1, $2, $3, 'starter', $4, 500, 500, $5, $6, 'offline')
     ON CONFLICT (email) DO UPDATE SET
+      name = COALESCE(NULLIF(EXCLUDED.name, ''), tenants.name),
       plan_id = EXCLUDED.plan_id,
       plan_active_until = EXCLUDED.plan_active_until,
       balance_usd = EXCLUDED.balance_usd,
@@ -34,6 +35,7 @@ async function main() {
     [
       DANIEL_TENANT_ID,
       DANIEL_EMAIL,
+      "Cloudsys Tec",
       until.toISOString(),
       limits.slots,
       limits.users,

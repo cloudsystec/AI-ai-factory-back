@@ -40,11 +40,14 @@ export async function getScopeStateSnapshot(tenantId, projectSlug) {
  */
 export async function getDevelopSettings(tenantId, projectSlug) {
   const { rows } = await query(
-    `SELECT autorun FROM project_develop_settings
+    `SELECT autorun, skip_human_approval FROM project_develop_settings
      WHERE tenant_id = $1 AND project_slug = $2`,
     [tenantId, projectSlug]
   );
-  return { autorun: rows[0]?.autorun === true };
+  return {
+    autorun: rows[0]?.autorun === true,
+    skipHumanApproval: rows[0]?.skip_human_approval === true,
+  };
 }
 
 /**
@@ -52,14 +55,19 @@ export async function getDevelopSettings(tenantId, projectSlug) {
  * @param {string} projectSlug
  * @param {boolean} autorun
  */
-export async function setDevelopSettings(tenantId, projectSlug, autorun) {
+export async function setDevelopSettings(tenantId, projectSlug, settings) {
+  const autorun =
+    typeof settings === "boolean" ? settings : settings?.autorun === true;
+  const skipHumanApproval =
+    typeof settings === "object" && settings?.skipHumanApproval === true;
   await query(
-    `INSERT INTO project_develop_settings (tenant_id, project_slug, autorun, updated_at)
-     VALUES ($1, $2, $3, now())
+    `INSERT INTO project_develop_settings (tenant_id, project_slug, autorun, skip_human_approval, updated_at)
+     VALUES ($1, $2, $3, $4, now())
      ON CONFLICT (tenant_id, project_slug) DO UPDATE SET
        autorun = EXCLUDED.autorun,
+       skip_human_approval = EXCLUDED.skip_human_approval,
        updated_at = now()`,
-    [tenantId, projectSlug, autorun]
+    [tenantId, projectSlug, autorun, skipHumanApproval]
   );
   return getDevelopSettings(tenantId, projectSlug);
 }

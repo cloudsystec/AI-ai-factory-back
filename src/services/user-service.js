@@ -267,7 +267,8 @@ export async function getExecutorCursorApiKeyDecrypted(userId) {
  */
 export async function loadSessionUser(userId) {
   const { rows } = await query(
-    `SELECT u.id, u.email, u.role, u.tenant_id, t.plan_active_until
+    `SELECT u.id, u.email, u.role, u.tenant_id,
+            t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
      WHERE u.id = $1`,
@@ -282,7 +283,7 @@ export async function loadSessionUser(userId) {
 export async function loadUserByEmail(email) {
   const { rows } = await query(
     `SELECT u.id, u.email, u.role, u.tenant_id, u.password_hash,
-            t.plan_active_until
+            t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
      WHERE u.email = $1`,

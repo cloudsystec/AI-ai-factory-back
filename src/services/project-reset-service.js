@@ -99,6 +99,21 @@ export async function resetProjectPlanning(tenantId, slug) {
   await clearProjectDashboard(tenantId, slug);
   await upsertDashboardSnapshot(tenantId, slug, [], emptyScopeState(slug));
 
+  await query(
+    `UPDATE projects SET git_status = 'pending', git_last_error = NULL WHERE tenant_id = $1 AND slug = $2`,
+    [tenantId, slug]
+  );
+
+  await query(
+    `DELETE FROM task_pull_requests WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, slug]
+  );
+
+  await query(
+    `DELETE FROM tenant_execution WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, slug]
+  );
+
   return {
     project: slug,
     macroId: slug,

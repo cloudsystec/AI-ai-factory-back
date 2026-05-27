@@ -21,6 +21,7 @@ import {
   getLatestJobForProject,
   queueJob,
 } from "../services/job-service.js";
+import { broadcast, registerJobTenant } from "../lib/ws-hub.js";
 
 function jobToJson(row) {
   if (!row) return null;
@@ -53,6 +54,13 @@ jobsRouter.post("/", requireCapability("execute"), async (req, res) => {
     await assertExecutorCanRunJobs(req.user.id);
     const result = await queueJob(req.user.tenantId, req.body ?? {}, {
       requestedByUserId: req.user.id,
+    });
+    registerJobTenant(result.jobId, req.user.tenantId);
+    broadcast(req.user.tenantId, {
+      type: "job:status",
+      jobId: result.jobId,
+      status: "queued",
+      kind: result.kind,
     });
     res.status(201).json({
       jobId: result.jobId,
@@ -263,31 +271,12 @@ jobsRouter.get("/:id/events", authFromQueryOrHeader, async (req, res) => {
   });
 });
 
-jobsRouter.post("/:id/cancel", requireCapability("execute"), async (req, res) => {
-  const job = await getJobById(req.params.id);
-  if (!job || job.tenant_id !== req.user.tenantId) {
-    return res.status(404).json({ error: "Job não encontrado" });
-  }
-  if (!["queued", "running", "waiting_input"].includes(job.status)) {
-    return res.status(409).json({
-      error: "Job já terminou",
-      job: jobToJson(job),
-    });
-  }
-  if (job.status === "queued") {
-    const { query } = await import("../db/pool.js");
-    await query(
-      "UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE id = $1",
-      [req.params.id]
-    );
-  } else {
-    await completeJob(req.user.tenantId, req.params.id, {
-      status: "cancelled",
-      exitCode: null,
-      costBaseUsd: 0,
-    });
-  }
-  res.json({ ok: true, status: "cancelled" });
+jobsRouter.post("/:id/cancel", requireCapability("execute"), async (_req, res) => {
+  res.status(403).json({
+    error:
+      "Cancelamento de jobs desativado. Os workers terminam o trabalho atual; use Pause na execução contínua.",
+    code: "cancel_disabled",
+  });
 });
 
 jobsRouter.get("/:id", async (req, res) => {
