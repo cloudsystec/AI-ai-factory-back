@@ -7,7 +7,7 @@ import { billingRouter } from "./routes/billing.js";
 import { devRouter } from "./routes/dev.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { projectsRouter } from "./routes/projects.js";
-import { stripeRouter } from "./routes/stripe.js";
+import { handleStripeWebhook } from "./routes/stripe.js";
 import { workerRouter } from "./routes/worker.js";
 import { projectDashboardRouter } from "./routes/project-dashboard.js";
 import { adminRouter } from "./routes/admin.js";
@@ -31,6 +31,13 @@ app.use(
     credentials: true,
   })
 );
+
+app.post(
+  "/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  handleStripeWebhook
+);
+
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -58,8 +65,6 @@ app.use("/api", projectDashboardRouter);
 app.use("/worker", workerRouter);
 app.use("/admin", adminRouter);
 app.use("/dev", devRouter);
-app.use(stripeRouter);
-
 app.use("/api", (req, res) => {
   res.status(404).json({ error: "Rota API não encontrada", method: req.method, path: req.path });
 });

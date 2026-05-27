@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test src/billing/billing.test.js src/lib/capabilities.test.js src/lib/job-log-redis.test.js src/lib/password.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js src/services/workspace-dashboard-reader.test.js",
+    "dev:debug": "node --inspect=9229 --watch src/index.js",
+    "test": "node --test src/billing/billing.test.js src/lib/capabilities.test.js src/lib/job-log-redis.test.js src/lib/password.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js src/lib/stripe-webhook-helpers.test.js src/services/workspace-dashboard-reader.test.js",
     "db:migrate": "node src/db/migrate.js",
     "db:seed": "node scripts/seed.js",
     "db:seed-agents": "node scripts/seed-agent-templates.js",
@@ -26,6 +27,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.3",
+    "stripe": "^18.0.0",
     "redis": "^4.7.0",
     "uuid": "^11.1.0",
     "ws": "^8.21.0"
