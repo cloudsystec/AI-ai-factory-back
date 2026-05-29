@@ -2,11 +2,11 @@ import { query } from "../db/pool.js";
 import { createLogger } from "../lib/logger.js";
 import {
   assertRailwayConfig,
-  buildInstanceInputFromTemplate,
   createEmptyService,
   createVolume,
   deployServiceInstance,
-  fetchServiceInstance,
+  railwayCliRegion,
+  resolveServiceInstanceInput,
   updateServiceInstance,
   upsertServiceVariables,
 } from "../lib/railway-api.js";
@@ -134,23 +134,20 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       await updateWorkerDeployment(tenantId, {
         railway_service_id: serviceId,
       });
-
-      const template = await fetchServiceInstance(
-        cfg.templateServiceId,
-        cfg.environmentId
-      );
-      const instanceInput = buildInstanceInputFromTemplate(template);
-      await updateServiceInstance(
-        cfg.environmentId,
-        serviceId,
-        instanceInput
-      );
     } else {
       log.info("Reutilizar serviço Railway existente", {
         tenantId: tenantId.slice(0, 8),
         serviceId,
       });
     }
+
+    const { input: instanceInput, templateRegion } =
+      await resolveServiceInstanceInput();
+    await updateServiceInstance(
+      cfg.environmentId,
+      serviceId,
+      instanceInput
+    );
 
     const env = await buildTenantWorkerEnv(tenantId);
     if (!env.BACK_URL || !env.WORKER_SECRET || !env.REDIS_URL) {
@@ -170,15 +167,8 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     const mountPath = `/app/data/tenants/${tenantId}`;
 
     if (!volumeId) {
-      const template = await fetchServiceInstance(
-        cfg.templateServiceId,
-        cfg.environmentId
-      );
       const region =
-        cfg.region ||
-        template.instance?.region ||
-        process.env.RAILWAY_DEFAULT_REGION ||
-        "us-west1";
+        cfg.region || templateRegion || railwayCliRegion();
 
       const volume = await createVolume({
         projectId: cfg.projectId,

@@ -1,42 +1,77 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildInstanceInputFromTemplate } from "./railway-api.js";
+import {
+  DEFAULT_RAILWAY_CLI_BRANCH,
+  DEFAULT_RAILWAY_CLI_REGION,
+  DEFAULT_RAILWAY_CLI_REPO,
+  buildInstanceInputFromEnv,
+  buildInstanceInputFromTemplate,
+  railwayCliBranch,
+  railwayCliRegion,
+  railwayCliRepo,
+} from "./railway-api.js";
 
-describe("railway-api buildInstanceInputFromTemplate", () => {
-  it("copia repo do template", () => {
-    const input = buildInstanceInputFromTemplate({
-      instance: {
-        region: "us-west1",
-        builder: "DOCKERFILE",
-        dockerfilePath: "Dockerfile",
-        source: { repo: "org/ai-factory-cli", branch: "main" },
-      },
-      service: { rootDirectory: "ai-factory-cli" },
-    });
-    assert.equal(input.isCreated, true);
-    assert.equal(input.region, "us-west1");
-    assert.deepEqual(input.source, {
-      repo: "org/ai-factory-cli",
-      branch: "main",
-    });
-    assert.equal(input.rootDirectory, "ai-factory-cli");
+describe("railway-api CLI defaults", () => {
+  it("defaults fixos sem ENV", () => {
+    const prev = {
+      RAILWAY_CLI_REPO: process.env.RAILWAY_CLI_REPO,
+      RAILWAY_CLI_BRANCH: process.env.RAILWAY_CLI_BRANCH,
+      RAILWAY_CLI_REGION: process.env.RAILWAY_CLI_REGION,
+    };
+    delete process.env.RAILWAY_CLI_REPO;
+    delete process.env.RAILWAY_CLI_BRANCH;
+    delete process.env.RAILWAY_CLI_REGION;
+    try {
+      assert.equal(railwayCliRepo(), DEFAULT_RAILWAY_CLI_REPO);
+      assert.equal(railwayCliBranch(), DEFAULT_RAILWAY_CLI_BRANCH);
+      assert.equal(railwayCliRegion(), DEFAULT_RAILWAY_CLI_REGION);
+      const input = buildInstanceInputFromEnv();
+      assert.deepEqual(input.source, {
+        repo: DEFAULT_RAILWAY_CLI_REPO,
+        branch: DEFAULT_RAILWAY_CLI_BRANCH,
+      });
+      assert.equal(input.region, DEFAULT_RAILWAY_CLI_REGION);
+    } finally {
+      if (prev.RAILWAY_CLI_REPO === undefined) delete process.env.RAILWAY_CLI_REPO;
+      else process.env.RAILWAY_CLI_REPO = prev.RAILWAY_CLI_REPO;
+      if (prev.RAILWAY_CLI_BRANCH === undefined) delete process.env.RAILWAY_CLI_BRANCH;
+      else process.env.RAILWAY_CLI_BRANCH = prev.RAILWAY_CLI_BRANCH;
+      if (prev.RAILWAY_CLI_REGION === undefined) delete process.env.RAILWAY_CLI_REGION;
+      else process.env.RAILWAY_CLI_REGION = prev.RAILWAY_CLI_REGION;
+    }
   });
 
-  it("usa RAILWAY_CLI_REPO como fallback", () => {
+  it("ENV sobrescreve defaults", () => {
     const prev = process.env.RAILWAY_CLI_REPO;
-    process.env.RAILWAY_CLI_REPO = "org/cli-repo";
+    process.env.RAILWAY_CLI_REPO = "other/repo";
     try {
-      const input = buildInstanceInputFromTemplate({
-        instance: null,
-        service: null,
-      });
-      assert.deepEqual(input.source, {
-        repo: "org/cli-repo",
-        branch: "main",
-      });
+      assert.equal(railwayCliRepo(), "other/repo");
     } finally {
       if (prev === undefined) delete process.env.RAILWAY_CLI_REPO;
       else process.env.RAILWAY_CLI_REPO = prev;
+    }
+  });
+});
+
+describe("railway-api buildInstanceInputFromTemplate", () => {
+  it("usa defaults quando template vazio", () => {
+    const input = buildInstanceInputFromTemplate({
+      instance: null,
+      service: null,
+    });
+    assert.equal(input.source.repo, DEFAULT_RAILWAY_CLI_REPO);
+  });
+
+  it("buildInstanceInputFromEnv com Dockerfile", () => {
+    const prev = process.env.RAILWAY_CLI_DOCKERFILE_PATH;
+    process.env.RAILWAY_CLI_DOCKERFILE_PATH = "Dockerfile";
+    try {
+      const input = buildInstanceInputFromEnv();
+      assert.equal(input.dockerfilePath, "Dockerfile");
+      assert.equal(input.builder, "DOCKERFILE");
+    } finally {
+      if (prev === undefined) delete process.env.RAILWAY_CLI_DOCKERFILE_PATH;
+      else process.env.RAILWAY_CLI_DOCKERFILE_PATH = prev;
     }
   });
 });

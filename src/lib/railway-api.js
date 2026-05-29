@@ -1,6 +1,28 @@
 const RAILWAY_GRAPHQL_URL =
   process.env.RAILWAY_GRAPHQL_URL || "https://backboard.railway.com/graphql/v2";
 
+/** Repo GitHub do worker CLI (1 repo para todos os tenants). ENV sobrescreve. */
+export const DEFAULT_RAILWAY_CLI_REPO = "cloudsystec/AI-ai-factory-cli";
+export const DEFAULT_RAILWAY_CLI_BRANCH = "main";
+/** US West (California, USA) no Railway */
+export const DEFAULT_RAILWAY_CLI_REGION = "us-west1";
+
+export function railwayCliRepo() {
+  return process.env.RAILWAY_CLI_REPO || DEFAULT_RAILWAY_CLI_REPO;
+}
+
+export function railwayCliBranch() {
+  return process.env.RAILWAY_CLI_BRANCH || DEFAULT_RAILWAY_CLI_BRANCH;
+}
+
+export function railwayCliRegion() {
+  return (
+    process.env.RAILWAY_CLI_REGION ||
+    process.env.RAILWAY_DEFAULT_REGION ||
+    DEFAULT_RAILWAY_CLI_REGION
+  );
+}
+
 /**
  * @param {string} query
  * @param {Record<string, unknown>} [variables]
@@ -50,14 +72,11 @@ export async function fetchServiceInstance(serviceId, environmentId) {
         source {
           image
           repo
-          branch
         }
       }
       service(id: $serviceId) {
         id
         name
-        repo
-        rootDirectory
       }
     }`,
     { environmentId, serviceId }
@@ -169,12 +188,40 @@ export async function deployServiceInstance(environmentId, serviceId) {
 }
 
 /**
+ * Configuração do serviço CLI (defaults + ENV opcional).
+ * @returns {Record<string, unknown>}
+ */
+export function buildInstanceInputFromEnv() {
+  /** @type {Record<string, unknown>} */
+  const input = {
+    isCreated: true,
+    region: railwayCliRegion(),
+    source: {
+      repo: railwayCliRepo(),
+      branch: railwayCliBranch(),
+    },
+  };
+
+  if (process.env.RAILWAY_CLI_ROOT_DIRECTORY) {
+    input.rootDirectory = process.env.RAILWAY_CLI_ROOT_DIRECTORY;
+  }
+  if (process.env.RAILWAY_CLI_DOCKERFILE_PATH) {
+    input.dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH;
+    input.builder = "DOCKERFILE";
+  }
+
+  return input;
+}
+
+/**
  * Copia source/build do template para o input de serviceInstanceUpdate.
  * @param {{ instance: Record<string, unknown> | null, service: Record<string, unknown> | null }} template
  */
 export function buildInstanceInputFromTemplate(template) {
+  const fromEnv = buildInstanceInputFromEnv();
+  if (fromEnv) return fromEnv;
+
   const inst = template.instance || {};
-  const svc = template.service || {};
   /** @type {Record<string, unknown>} */
   const input = { isCreated: true };
 
@@ -182,30 +229,16 @@ export function buildInstanceInputFromTemplate(template) {
   if (inst.builder) input.builder = inst.builder;
   if (inst.dockerfilePath) input.dockerfilePath = inst.dockerfilePath;
   if (inst.rootDirectory) input.rootDirectory = inst.rootDirectory;
-  else if (svc.rootDirectory) input.rootDirectory = svc.rootDirectory;
   if (inst.startCommand) input.startCommand = inst.startCommand;
 
   const source = /** @type {Record<string, unknown>} */ (inst.source || {});
   if (source.image) {
     input.source = { image: source.image };
-  } else if (source.repo || svc.repo) {
+  } else if (source.repo) {
     input.source = {
-      repo: source.repo || svc.repo,
-      branch: source.branch || process.env.RAILWAY_CLI_BRANCH || "main",
-    };
-  } else if (process.env.RAILWAY_CLI_REPO) {
-    input.source = {
-      repo: process.env.RAILWAY_CLI_REPO,
+      repo: source.repo,
       branch: process.env.RAILWAY_CLI_BRANCH || "main",
     };
-    if (process.env.RAILWAY_CLI_ROOT_DIRECTORY) {
-      input.rootDirectory = process.env.RAILWAY_CLI_ROOT_DIRECTORY;
-    }
-  }
-
-  if (!input.source && !input.dockerfilePath && process.env.RAILWAY_CLI_DOCKERFILE_PATH) {
-    input.dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH;
-    input.builder = input.builder || "DOCKERFILE";
   }
 
   if (!input.source && !input.dockerfilePath) {
@@ -217,13 +250,24 @@ export function buildInstanceInputFromTemplate(template) {
   return input;
 }
 
+/**
+ * Resolve input de deploy: defaults fixos (repo CLI) — sem ler template via GraphQL.
+ */
+export async function resolveServiceInstanceInput() {
+  const input = buildInstanceInputFromEnv();
+  return {
+    input,
+    templateRegion: railwayCliRegion(),
+  };
+}
+
 export function railwayConfig() {
   return {
     apiToken: Boolean(process.env.RAILWAY_API_TOKEN),
     projectId: process.env.RAILWAY_PROJECT_ID || "",
     environmentId: process.env.RAILWAY_ENVIRONMENT_ID || "",
     templateServiceId: process.env.RAILWAY_CLI_TEMPLATE_SERVICE_ID || "",
-    region: process.env.RAILWAY_CLI_REGION || "",
+    region: railwayCliRegion(),
   };
 }
 
