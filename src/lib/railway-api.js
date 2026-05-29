@@ -171,14 +171,9 @@ export function toStagedVariableMap(variables) {
 export async function stageWorkerServiceConfig(environmentId, serviceId, config) {
   /** @type {Record<string, unknown>} */
   const servicePatch = {
-    isCreated: config.isCreated !== false,
+    isCreated: config.isCreated === true,
     source: { repo: config.repo, branch: config.branch },
     variables: toStagedVariableMap(config.variables),
-    deploy: {
-      multiRegionConfig: {
-        [config.region]: { numReplicas: 1 },
-      },
-    },
   };
 
   if (config.dockerfilePath) {
@@ -187,6 +182,13 @@ export async function stageWorkerServiceConfig(environmentId, serviceId, config)
       dockerfilePath: config.dockerfilePath,
     };
   }
+
+  servicePatch.deploy = {
+    runtime: "V2",
+    multiRegionConfig: {
+      [config.region]: { numReplicas: 1 },
+    },
+  };
 
   await railwayGraphql(
     `mutation StageWorker($environmentId: String!, $input: EnvironmentConfig!, $merge: Boolean) {
@@ -263,12 +265,20 @@ export async function deployServiceInstance(environmentId, serviceId) {
 }
 
 /**
- * Configura e aplica deploy do worker (repo + env + região).
+ * Serviço sem instância no ambiente (ex.: serviceCreate antigo ou retry após falha cedo).
+ * @param {unknown} instance
+ */
+export function needsServiceInstanceCreate(instance) {
+  return instance == null;
+}
+
+/**
+ * Configura e aplica deploy do worker (repo + env + região) via staged changes.
+ * Não usa serviceConnect: exige ServiceInstance já existente e falha em serviços órfãos.
  * @param {{
  *   environmentId: string,
  *   serviceId: string,
  *   variables: Record<string, string>,
- *   isNewService?: boolean,
  * }} input
  */
 export async function applyWorkerServiceConfig(input) {
@@ -277,13 +287,10 @@ export async function applyWorkerServiceConfig(input) {
   const region = railwayCliRegion();
   const dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH || "Dockerfile";
 
-  await railwayStep("serviceConnect", () =>
-    connectServiceRepo(input.serviceId, repo, branch).catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/already|connected|duplicate/i.test(msg)) return;
-      throw e;
-    })
+  const { instance } = await railwayStep("fetchServiceInstance", () =>
+    fetchServiceInstance(input.serviceId, input.environmentId)
   );
+  const isCreated = needsServiceInstanceCreate(instance);
 
   await railwayStep("environmentStageChanges", () =>
     stageWorkerServiceConfig(input.environmentId, input.serviceId, {
@@ -291,7 +298,7 @@ export async function applyWorkerServiceConfig(input) {
       branch,
       region,
       variables: input.variables,
-      isCreated: input.isNewService !== false,
+      isCreated,
       dockerfilePath,
     })
   );
@@ -299,6 +306,16 @@ export async function applyWorkerServiceConfig(input) {
   await railwayStep("environmentPatchCommitStaged", () =>
     commitStagedEnvironment(input.environmentId)
   );
+
+  if (!isCreated && !instance?.source?.repo) {
+    await railwayStep("serviceConnect", () =>
+      connectServiceRepo(input.serviceId, repo, branch).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/already|connected|duplicate/i.test(msg)) return;
+        throw e;
+      })
+    );
+  }
 }
 
 export function railwayConfig() {

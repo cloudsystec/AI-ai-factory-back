@@ -121,7 +121,6 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
 
   try {
     let serviceId = row.railway_service_id || null;
-    const isNewService = !serviceId;
 
     if (!serviceId) {
       const prefix = tenantId.slice(0, 8);
@@ -154,7 +153,6 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
-      isNewService,
     });
 
     let volumeId = row.railway_volume_id || null;

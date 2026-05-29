@@ -4,6 +4,7 @@ import {
   DEFAULT_RAILWAY_CLI_BRANCH,
   DEFAULT_RAILWAY_CLI_REGION,
   DEFAULT_RAILWAY_CLI_REPO,
+  needsServiceInstanceCreate,
   railwayCliBranch,
   railwayCliRegion,
   railwayCliRepo,
@@ -52,5 +53,13 @@ describe("railway-api staged variables", () => {
       TENANT_ID: { value: "abc" },
       PORT: { value: "80" },
     });
+  });
+});
+
+describe("railway-api service instance", () => {
+  it("needsServiceInstanceCreate quando instância ausente", () => {
+    assert.equal(needsServiceInstanceCreate(null), true);
+    assert.equal(needsServiceInstanceCreate(undefined), true);
+    assert.equal(needsServiceInstanceCreate({ region: "us-west1" }), false);
   });
 });
