@@ -37,6 +37,7 @@ const TABLES_ORDERED = [
   "projects",
   "agent_templates",
   "tenant_workers",
+  "tenant_worker_deployments",
   "stripe_events",
 ];
 const TENANT_TABLES = ["users", "tenants"];

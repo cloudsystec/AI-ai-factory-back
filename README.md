@@ -65,6 +65,37 @@ Cada webhook processado fica em `stripe_events` com `payload` (JSON completo do 
 
 Teste local: `stripe listen --forward-to localhost:4000/webhooks/stripe`
 
+Após `checkout.session.completed`, o back enfileira provisionamento do **worker CLI no Railway** (Modelo A: um serviço por tenant). Renovações (`invoice.paid`) **não** reprovisionam worker.
+
+## Worker CLI no Railway (provisionamento automático)
+
+Variáveis no serviço **back** (ver [.env.example](.env.example)):
+
+| Variável | Descrição |
+|----------|-----------|
+| `PUBLIC_BACK_URL` | URL pública desta API (`BACK_URL` dos workers) |
+| `RAILWAY_API_TOKEN` | Token em railway.com/account/tokens |
+| `RAILWAY_PROJECT_ID` | Project (Cmd+K → Copy Project ID) |
+| `RAILWAY_ENVIRONMENT_ID` | Environment prod |
+| `RAILWAY_CLI_TEMPLATE_SERVICE_ID` | Serviço CLI modelo já funcional no mesmo project |
+| `TENANT_REDIS_URL` | Redis acessível pelos workers (mesmo que `REDIS_URL` do back em Railway) |
+
+Fluxo:
+
+1. Stripe `checkout.session.completed` → tenant + auditor na BD.
+2. Back clona serviço a partir do template, injecta env (`TENANT_ID`, `WORKER_SECRET`, etc.), cria volume em `/app/data/tenants/<uuid>` e faz deploy.
+3. CLI regista → `tenants.worker_status = online`.
+4. Admin configura **bots** (Admin → Bots) antes do cliente usar Play.
+
+Estado em `tenant_worker_deployments` (`pending` / `provisioning` / `deployed` / `failed`). Retry: `POST /admin/tenants/:id/worker/provision` ou botão **Reprovisionar worker** no portal admin.
+
+Runbook onboarding:
+
+1. Cliente paga (1 empresa = 1 tenant).
+2. Aguardar deploy Railway (~minutos).
+3. Admin configura bots Cursor por slot.
+4. Cliente faz login com email do checkout → cria projeto → Play.
+
 ## Debug (Cursor / VS Code)
 
 1. Abra **Run and Debug** (F5) e escolha **Back: API (debug)** — usa o `.env` do back e para em breakpoints.

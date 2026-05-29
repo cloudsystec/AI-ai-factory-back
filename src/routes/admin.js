@@ -30,6 +30,10 @@ import {
   listWorkersStatus,
   setBotConfigForSlot,
 } from "../services/worker-bot-service.js";
+import {
+  getWorkerDeployment,
+  retryWorkerProvision,
+} from "../services/worker-deployment-service.js";
 
 export const adminRouter = Router();
 adminRouter.use(requirePlatformAdmin);
@@ -61,8 +65,15 @@ async function assertTenantProject(tenantId, slug) {
 
 adminRouter.get("/tenants", async (_req, res) => {
   const { rows } = await query(
-    `SELECT id, email, name, plan_id, plan_active_until, users_max, agent_slots_max
-     FROM tenants ORDER BY COALESCE(NULLIF(name, ''), email)`
+    `SELECT t.id, t.email, t.name, t.plan_id, t.plan_active_until,
+            t.users_max, t.agent_slots_max, t.worker_status,
+            d.status AS worker_deploy_status,
+            d.railway_service_id,
+            d.last_error AS worker_deploy_error,
+            d.provisioned_at AS worker_provisioned_at
+     FROM tenants t
+     LEFT JOIN tenant_worker_deployments d ON d.tenant_id = t.id
+     ORDER BY COALESCE(NULLIF(t.name, ''), t.email)`
   );
   const tenants = await Promise.all(
     rows.map(async (t) => {
@@ -71,10 +82,38 @@ adminRouter.get("/tenants", async (_req, res) => {
         ...t,
         botsTotal: t.agent_slots_max,
         botsConfiguredCount,
+        workerDeployStatus: t.worker_deploy_status || null,
+        workerStatus: t.worker_status,
+        railwayServiceId: t.railway_service_id
+          ? `${String(t.railway_service_id).slice(0, 8)}…`
+          : null,
+        workerDeployError: t.worker_deploy_error || null,
+        workerProvisionedAt: t.worker_provisioned_at || null,
       };
     })
   );
   res.json({ tenants });
+});
+
+adminRouter.post("/tenants/:tenantId/worker/provision", async (req, res) => {
+  const { tenantId } = req.params;
+  const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+    tenantId,
+  ]);
+  if (!rows[0]) {
+    return res.status(404).json({ error: "Tenant não encontrado" });
+  }
+  try {
+    const result = await retryWorkerProvision(tenantId);
+    const deployment = await getWorkerDeployment(tenantId);
+    res.json({ ok: true, result, deployment });
+  } catch (e) {
+    const deployment = await getWorkerDeployment(tenantId);
+    res.status(500).json({
+      error: e instanceof Error ? e.message : "provision failed",
+      deployment,
+    });
+  }
 });
 
 adminRouter.post("/tenants", async (req, res) => {

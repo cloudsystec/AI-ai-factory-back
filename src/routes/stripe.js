@@ -20,6 +20,7 @@ import {
   setTenantCursorAdminKey,
   upsertTenant,
 } from "../services/tenant-service.js";
+import { enqueueWorkerProvision } from "../services/worker-deployment-service.js";
 
 const log = createLogger("stripe");
 
@@ -162,6 +163,7 @@ async function provisionFromCheckoutSession(session) {
   });
   await ensureAuditorUser(tenant.id, tenant.email);
   await applyPlatformCursorAdminKeyIfNeeded(tenant.id);
+  enqueueWorkerProvision(tenant.id);
   log.info("Tenant provisionado via Stripe", {
     tenantId: tenant.id,
     email: tenant.email,
