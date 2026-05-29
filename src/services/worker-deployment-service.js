@@ -10,13 +10,14 @@ import {
   isWorkerServiceConfigured,
   isWorkerServiceHealthy,
   isWorkerServiceNameValid,
-  railwayCliRegion,
   railwayStep,
+  resolveServiceRegion,
   serviceInstanceHasRepo,
   triggerWorkerRedeploy,
   updateServiceName,
   workerServiceName,
   workerSkipsBuildOnProvision,
+  workerTenantMountPath,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
 
@@ -249,10 +250,12 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     });
 
     let volumeId = isNewService ? null : row.railway_volume_id || null;
-    const mountPath = `/app/data/tenants/${tenantId}`;
+    const mountPath = workerTenantMountPath(tenantId);
 
     if (!volumeId) {
-      const region = cfg.region || railwayCliRegion();
+      const region = await railwayStep("resolveServiceRegion", () =>
+        resolveServiceRegion(serviceId, cfg.environmentId)
+      );
       const volume = await railwayStep("volumeCreate", () =>
         createVolume({
           projectId: cfg.projectId,

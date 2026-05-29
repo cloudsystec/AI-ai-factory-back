@@ -15,6 +15,7 @@ import {
   toStagedVariableMap,
   workerServiceName,
   workerSkipsBuildOnProvision,
+  workerTenantMountPath,
 } from "./railway-api.js";
 
 describe("railway-api CLI defaults", () => {
@@ -87,6 +88,16 @@ describe("railway-api worker service name", () => {
         tenantId
       ),
       false
+    );
+  });
+});
+
+describe("railway-api worker mount path", () => {
+  it("workerTenantMountPath igual ao CLI entrypoint", () => {
+    const tenantId = "c7084c25-efaa-4182-8909-604fb6fa9369";
+    assert.equal(
+      workerTenantMountPath(tenantId),
+      `/app/data/tenants/${tenantId}`
     );
   });
 });

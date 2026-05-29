@@ -4,8 +4,13 @@ const RAILWAY_GRAPHQL_URL =
 /** Repo GitHub do worker CLI (1 repo para todos os tenants). ENV sobrescreve. */
 export const DEFAULT_RAILWAY_CLI_REPO = "cloudsystec/AI-ai-factory-cli";
 export const DEFAULT_RAILWAY_CLI_BRANCH = "main";
-/** US West (California, USA) no Railway */
+/** US West (California) — fallback só se volumeCreate exigir region e API não devolver */
 export const DEFAULT_RAILWAY_CLI_REGION = "us-west1";
+
+/** Mount path do volume por tenant (igual ao CLI docker-entrypoint). */
+export function workerTenantMountPath(tenantId) {
+  return `/app/data/tenants/${String(tenantId)}`;
+}
 
 export function railwayCliRepo() {
   return process.env.RAILWAY_CLI_REPO || DEFAULT_RAILWAY_CLI_REPO;
@@ -261,7 +266,6 @@ export function toStagedVariableMap(variables) {
  * @param {{
  *   repo: string,
  *   branch: string,
- *   region: string,
  *   variables: Record<string, string>,
  *   isCreated?: boolean,
  *   dockerfilePath?: string,
@@ -292,12 +296,8 @@ export async function stageWorkerServiceConfig(environmentId, serviceId, config)
     };
   }
 
-  servicePatch.deploy = {
-    runtime: "V2",
-    multiRegionConfig: {
-      [config.region]: { numReplicas: 1 },
-    },
-  };
+  // Não enviar deploy.multiRegionConfig — região fica no default do project/Railway.
+  // Enviar região com merge:true acumula US West + Oregon e quebra volume (1 região só).
 
   await railwayGraphql(
     `mutation StageWorker($environmentId: String!, $input: EnvironmentConfig!, $merge: Boolean) {
@@ -338,26 +338,41 @@ export async function commitStagedEnvironment(environmentId, message, opts = {})
 }
 
 /**
- * @param {{ projectId: string, environmentId: string, serviceId: string, mountPath: string, region: string }} input
+ * @param {{ projectId: string, environmentId: string, serviceId: string, mountPath: string, region?: string }} input
  */
 export async function createVolume(input) {
+  /** @type {Record<string, unknown>} */
+  const volInput = {
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    serviceId: input.serviceId,
+    mountPath: input.mountPath,
+  };
+  if (input.region) {
+    volInput.region = input.region;
+  }
+
   const data = await railwayGraphql(
     `mutation VolumeCreate($input: VolumeCreateInput!) {
       volumeCreate(input: $input) { id name }
     }`,
-    {
-      input: {
-        projectId: input.projectId,
-        environmentId: input.environmentId,
-        serviceId: input.serviceId,
-        mountPath: input.mountPath,
-        region: input.region,
-      },
-    }
+    { input: volInput }
   );
   const vol = data?.volumeCreate;
   if (!vol?.id) throw new Error("volumeCreate não devolveu id");
   return vol;
+}
+
+/**
+ * Região do serviço no ambiente (para volumeCreate); fallback ENV/default.
+ * @param {string} serviceId
+ * @param {string} environmentId
+ */
+export async function resolveServiceRegion(serviceId, environmentId) {
+  const { instance } = await fetchServiceInstance(serviceId, environmentId);
+  const fromInstance = /** @type {{ region?: string } | null} */ (instance)?.region;
+  if (fromInstance) return fromInstance;
+  return railwayCliRegion();
 }
 
 /**
@@ -449,7 +464,6 @@ export function needsServiceInstanceCreate(instance) {
 export async function applyWorkerServiceConfig(input) {
   const repo = railwayCliRepo();
   const branch = railwayCliBranch();
-  const region = railwayCliRegion();
   const dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH || "Dockerfile";
   const configOnly =
     input.configOnly ?? workerSkipsBuildOnProvision();
@@ -465,7 +479,6 @@ export async function applyWorkerServiceConfig(input) {
     stageWorkerServiceConfig(input.environmentId, input.serviceId, {
       repo,
       branch,
-      region,
       variables: input.variables,
       isCreated,
       dockerfilePath,
