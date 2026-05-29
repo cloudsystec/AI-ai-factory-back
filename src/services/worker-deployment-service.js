@@ -17,6 +17,7 @@ import {
   updateServiceName,
   workerServiceName,
   workerSkipsBuildOnProvision,
+  workerSkipsVolumeOnProvision,
   workerTenantMountPath,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
@@ -154,7 +155,7 @@ export async function updateWorkerDeployment(tenantId, patch) {
 }
 
 /**
- * Fase 1: serviço + repo + variáveis + volume, sem build Docker (skipDeploys).
+ * Fase 1: serviço + repo + variáveis, sem build Docker e sem volume (por defeito).
  * @param {string} tenantId
  * @param {{ force?: boolean }} [opts]
  */
@@ -190,6 +191,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
 
   const cfg = assertRailwayConfig();
   const configOnly = workerSkipsBuildOnProvision();
+  const skipVolume = workerSkipsVolumeOnProvision();
 
   await updateWorkerDeployment(tenantId, {
     status: "provisioning",
@@ -249,10 +251,10 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       configOnly,
     });
 
-    let volumeId = isNewService ? null : row.railway_volume_id || null;
+    let volumeId = row.railway_volume_id || null;
     const mountPath = workerTenantMountPath(tenantId);
 
-    if (!volumeId) {
+    if (!skipVolume && !volumeId) {
       const region = await railwayStep("resolveServiceRegion", () =>
         resolveServiceRegion(serviceId, cfg.environmentId)
       );
@@ -294,18 +296,20 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     log.info("Worker CLI configurado no Railway", {
       tenantId: tenantId.slice(0, 8),
       serviceId,
-      volumeId,
-      mountPath,
+      volumeId: volumeId || null,
+      mountPath: skipVolume ? null : mountPath,
       hasRepo: serviceInstanceHasRepo(instance),
       configOnly,
+      skipVolume,
     });
 
     return {
       skipped: false,
       configOnly,
+      skipVolume,
       serviceId,
-      volumeId,
-      mountPath,
+      volumeId: volumeId || null,
+      mountPath: skipVolume ? null : mountPath,
       status: finalStatus,
     };
   } catch (e) {

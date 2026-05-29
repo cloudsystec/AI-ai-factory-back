@@ -89,7 +89,7 @@ Fluxo:
 
 Estado em `tenant_worker_deployments` (`pending` / `provisioning` / `configured` / `deployed` / `failed`).
 
-Por defeito o provisionamento **não faz build Docker** (`skipDeploys`): cria serviço, liga repo, variáveis e volume. Build num passo à parte:
+Por defeito o provisionamento **não faz build Docker** nem **cria volume** (`skipDeploys`): cria serviço, liga repo e variáveis. Região fica no default do Railway (não enviamos `multiRegionConfig`). Volume: attach manual no dashboard ou `RAILWAY_WORKER_CREATE_VOLUME=true`.
 
 - `POST /admin/tenants/:id/worker/provision` — fase 1 (config)
 - `POST /admin/tenants/:id/worker/deploy` — fase 2 (build + deploy)

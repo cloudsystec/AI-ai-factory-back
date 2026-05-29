@@ -60,9 +60,14 @@ export function serviceInstanceHasRepo(instance, repo = railwayCliRepo()) {
  * @param {unknown} instance
  * @param {string} tenantId
  */
-/** Por defeito: provisionar só config (repo/vars/volume), build num passo à parte. */
+/** Por defeito: provisionar só config (repo/vars), sem build Docker. */
 export function workerSkipsBuildOnProvision() {
   return process.env.RAILWAY_WORKER_SKIP_BUILD !== "false";
+}
+
+/** Por defeito: não criar volume no provisionamento (attach manual ou fase posterior). */
+export function workerSkipsVolumeOnProvision() {
+  return process.env.RAILWAY_WORKER_CREATE_VOLUME !== "true";
 }
 
 /**

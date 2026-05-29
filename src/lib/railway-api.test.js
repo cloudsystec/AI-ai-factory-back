@@ -15,6 +15,7 @@ import {
   toStagedVariableMap,
   workerServiceName,
   workerSkipsBuildOnProvision,
+  workerSkipsVolumeOnProvision,
   workerTenantMountPath,
 } from "./railway-api.js";
 
@@ -144,6 +145,19 @@ describe("railway-api worker health", () => {
     } finally {
       if (prev === undefined) delete process.env.RAILWAY_WORKER_SKIP_BUILD;
       else process.env.RAILWAY_WORKER_SKIP_BUILD = prev;
+    }
+  });
+
+  it("workerSkipsVolumeOnProvision default true", () => {
+    const prev = process.env.RAILWAY_WORKER_CREATE_VOLUME;
+    delete process.env.RAILWAY_WORKER_CREATE_VOLUME;
+    try {
+      assert.equal(workerSkipsVolumeOnProvision(), true);
+      process.env.RAILWAY_WORKER_CREATE_VOLUME = "true";
+      assert.equal(workerSkipsVolumeOnProvision(), false);
+    } finally {
+      if (prev === undefined) delete process.env.RAILWAY_WORKER_CREATE_VOLUME;
+      else process.env.RAILWAY_WORKER_CREATE_VOLUME = prev;
     }
   });
 });
