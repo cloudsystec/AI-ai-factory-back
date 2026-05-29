@@ -135,13 +135,13 @@ describe("railway-api worker health", () => {
     );
   });
 
-  it("workerSkipsBuildOnProvision default true", () => {
+  it("workerSkipsBuildOnProvision default false (build incluído)", () => {
     const prev = process.env.RAILWAY_WORKER_SKIP_BUILD;
     delete process.env.RAILWAY_WORKER_SKIP_BUILD;
     try {
-      assert.equal(workerSkipsBuildOnProvision(), true);
-      process.env.RAILWAY_WORKER_SKIP_BUILD = "false";
       assert.equal(workerSkipsBuildOnProvision(), false);
+      process.env.RAILWAY_WORKER_SKIP_BUILD = "true";
+      assert.equal(workerSkipsBuildOnProvision(), true);
     } finally {
       if (prev === undefined) delete process.env.RAILWAY_WORKER_SKIP_BUILD;
       else process.env.RAILWAY_WORKER_SKIP_BUILD = prev;

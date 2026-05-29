@@ -55,14 +55,9 @@ export function serviceInstanceHasRepo(instance, repo = railwayCliRepo()) {
   return actual === expected || actual.endsWith(`/${expected.split("/")[1]}`);
 }
 
-/**
- * @param {unknown} service
- * @param {unknown} instance
- * @param {string} tenantId
- */
-/** Por defeito: provisionar só config (repo/vars), sem build Docker. */
+/** Por defeito inclui build Docker no provisionamento. Só skip com RAILWAY_WORKER_SKIP_BUILD=true */
 export function workerSkipsBuildOnProvision() {
-  return process.env.RAILWAY_WORKER_SKIP_BUILD !== "false";
+  return process.env.RAILWAY_WORKER_SKIP_BUILD === "true";
 }
 
 /** Por defeito: não criar volume no provisionamento (attach manual ou fase posterior). */

@@ -155,7 +155,8 @@ export async function updateWorkerDeployment(tenantId, patch) {
 }
 
 /**
- * Fase 1: serviço + repo + variáveis, sem build Docker e sem volume (por defeito).
+ * Fase 1: serviço + repo + variáveis (skipDeploys). Fase 2: Dockerfile + deploy (por defeito).
+ * Sem região explícita nem volume (por defeito).
  * @param {string} tenantId
  * @param {{ force?: boolean }} [opts]
  */
@@ -169,7 +170,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
 
   if (
     !force &&
-    (row.status === "deployed" || row.status === "configured") &&
+    row.status === "deployed" &&
     row.railway_service_id
   ) {
     log.info("Worker já configurado/provisionado", {
@@ -190,7 +191,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
   }
 
   const cfg = assertRailwayConfig();
-  const configOnly = workerSkipsBuildOnProvision();
+  const skipBuild = workerSkipsBuildOnProvision();
   const skipVolume = workerSkipsVolumeOnProvision();
 
   await updateWorkerDeployment(tenantId, {
@@ -248,7 +249,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
-      configOnly,
+      configOnly: true,
     });
 
     let volumeId = row.railway_volume_id || null;
@@ -285,28 +286,66 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       );
     }
 
-    const finalStatus = configOnly ? "configured" : "deployed";
+    let finalStatus = skipBuild ? "configured" : "provisioning";
+    let buildPending = false;
+
+    if (!skipBuild) {
+      await applyWorkerServiceConfig({
+        environmentId: cfg.environmentId,
+        serviceId,
+        variables: env,
+        configOnly: false,
+      });
+
+      const redeploy = await railwayStep("serviceInstanceDeployV2", () =>
+        triggerWorkerRedeploy(cfg.environmentId, serviceId)
+      );
+
+      const afterDeploy = await fetchServiceInstance(
+        serviceId,
+        cfg.environmentId
+      );
+      const healthy = isWorkerServiceHealthy(
+        afterDeploy.service,
+        afterDeploy.instance,
+        tenantId
+      );
+
+      if (!healthy && !redeploy.skipped) {
+        buildPending = true;
+        finalStatus = "configured";
+      } else if (healthy) {
+        finalStatus = "deployed";
+      } else {
+        buildPending = true;
+        finalStatus = "configured";
+      }
+    }
 
     await updateWorkerDeployment(tenantId, {
       status: finalStatus,
-      last_error: null,
-      provisioned_at: new Date(),
+      last_error: buildPending
+        ? "Build em curso no Railway — aguardar deployment"
+        : null,
+      provisioned_at: finalStatus === "deployed" ? new Date() : null,
     });
 
-    log.info("Worker CLI configurado no Railway", {
+    log.info("Worker CLI provisionado no Railway", {
       tenantId: tenantId.slice(0, 8),
       serviceId,
       volumeId: volumeId || null,
       mountPath: skipVolume ? null : mountPath,
       hasRepo: serviceInstanceHasRepo(instance),
-      configOnly,
+      skipBuild,
       skipVolume,
+      finalStatus,
     });
 
     return {
       skipped: false,
-      configOnly,
+      skipBuild,
       skipVolume,
+      buildPending,
       serviceId,
       volumeId: volumeId || null,
       mountPath: skipVolume ? null : mountPath,
