@@ -5,9 +5,13 @@ import {
   applyWorkerServiceConfig,
   createVolume,
   createWorkerService,
+  deleteRailwayService,
   fetchServiceInstance,
+  isWorkerServiceHealthy,
+  isWorkerServiceNameValid,
   railwayCliRegion,
   railwayStep,
+  serviceInstanceHasRepo,
   triggerWorkerRedeploy,
   updateServiceName,
   waitForServiceInstance,
@@ -20,7 +24,7 @@ const log = createLogger("worker-deploy");
 const PROVISIONING_STALE_MS = 15 * 60 * 1000;
 
 /**
- * Se o serviço foi apagado no Railway, limpa IDs na BD para recriar limpo.
+ * Serviço ausente, nome corrompido (cli-uuid-uuid…) ou sem repo → apagar e recriar.
  * @param {string} tenantId
  * @param {string | null} serviceId
  * @param {string} environmentId
@@ -28,22 +32,64 @@ const PROVISIONING_STALE_MS = 15 * 60 * 1000;
 async function resolveWorkerServiceId(tenantId, serviceId, environmentId) {
   if (!serviceId) return null;
 
+  const clearIds = async () => {
+    await updateWorkerDeployment(tenantId, {
+      railway_service_id: null,
+      railway_volume_id: null,
+    });
+  };
+
+  let service;
+  let instance;
   try {
-    const { service } = await fetchServiceInstance(serviceId, environmentId);
-    if (service?.id) return service.id;
+    ({ service, instance } = await fetchServiceInstance(
+      serviceId,
+      environmentId
+    ));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!/not found|does not exist|invalid/i.test(msg)) throw e;
+    log.warn("Serviço Railway ausente — limpar IDs", {
+      tenantId: tenantId.slice(0, 8),
+      serviceId,
+    });
+    await clearIds();
+    return null;
   }
 
-  log.warn("Serviço Railway ausente — limpar IDs e recriar", {
+  if (!service?.id) {
+    log.warn("Serviço Railway ausente — limpar IDs", {
+      tenantId: tenantId.slice(0, 8),
+      serviceId,
+    });
+    await clearIds();
+    return null;
+  }
+
+  const nameOk = isWorkerServiceNameValid(service.name, tenantId);
+  const hasRepo = serviceInstanceHasRepo(instance);
+
+  if (nameOk && hasRepo) return service.id;
+
+  log.warn("Serviço Railway inválido — apagar e recriar", {
     tenantId: tenantId.slice(0, 8),
     serviceId,
+    name: service.name,
+    expectedName: workerServiceName(tenantId),
+    hasRepo,
   });
-  await updateWorkerDeployment(tenantId, {
-    railway_service_id: null,
-    railway_volume_id: null,
-  });
+
+  try {
+    await railwayStep("serviceDelete", () => deleteRailwayService(serviceId));
+  } catch (e) {
+    log.warn("serviceDelete falhou — apague manualmente no Railway se persistir", {
+      tenantId: tenantId.slice(0, 8),
+      serviceId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+
+  await clearIds();
   return null;
 }
 
@@ -241,28 +287,35 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       });
     }
 
-    const { instance } = await fetchServiceInstance(
+    const { instance, service } = await fetchServiceInstance(
       serviceId,
       cfg.environmentId
     );
-    if (!instance && !redeploy.skipped) {
+    const healthy = isWorkerServiceHealthy(service, instance, tenantId);
+
+    if (!healthy && !redeploy.skipped) {
+      const missingRepo = instance && !serviceInstanceHasRepo(instance);
       throw new Error(
-        "Config aplicada mas ServiceInstance ainda não visível — aguarde 'Applying changes' no Railway"
+        missingRepo
+          ? "Serviço sem repo GitHub ligado — reprovisione após deploy do back"
+          : "Config aplicada mas ServiceInstance ainda não visível — aguarde 'Applying changes' no Railway"
       );
     }
 
     await updateWorkerDeployment(tenantId, {
-      status: instance ? "deployed" : "provisioning",
-      last_error: instance
+      status: healthy ? "deployed" : "provisioning",
+      last_error: healthy
         ? null
-        : "Railway a aplicar changes — aguardar ou reprovisionar em 2 min",
-      provisioned_at: instance ? new Date() : null,
+        : "Railway a aplicar changes ou repo em falta — aguardar 2 min e reprovisionar",
+      provisioned_at: healthy ? new Date() : null,
     });
 
-    if (!instance) {
-      log.warn("Provisionamento parcial — Railway ainda a aplicar changes", {
+    if (!healthy) {
+      log.warn("Provisionamento parcial — aguardar Railway ou repo", {
         tenantId: tenantId.slice(0, 8),
         serviceId,
+        hasRepo: serviceInstanceHasRepo(instance),
+        serviceName: service?.name,
       });
       return {
         skipped: false,

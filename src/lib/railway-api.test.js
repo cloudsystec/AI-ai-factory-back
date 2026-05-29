@@ -4,10 +4,13 @@ import {
   DEFAULT_RAILWAY_CLI_BRANCH,
   DEFAULT_RAILWAY_CLI_REGION,
   DEFAULT_RAILWAY_CLI_REPO,
+  isWorkerServiceHealthy,
+  isWorkerServiceNameValid,
   needsServiceInstanceCreate,
   railwayCliBranch,
   railwayCliRegion,
   railwayCliRepo,
+  serviceInstanceHasRepo,
   toStagedVariableMap,
   workerServiceName,
 } from "./railway-api.js";
@@ -70,6 +73,47 @@ describe("railway-api worker service name", () => {
     assert.equal(
       workerServiceName("bb6d9ded-c649-4134-b3c0-90a844a029b1"),
       "cli-bb6d9ded-c649-4134-b3c0-90a844a029b1"
+    );
+  });
+
+  it("rejeita nome corrompido com UUIDs concatenados", () => {
+    const tenantId = "bb6d9ded-c649-4134-b3c0-90a844a029b1";
+    assert.equal(isWorkerServiceNameValid(workerServiceName(tenantId), tenantId), true);
+    assert.equal(
+      isWorkerServiceNameValid(
+        "cli-bb6d9ded-45307d13-bb16-4a58-b9cf-e066d2dbe1d1",
+        tenantId
+      ),
+      false
+    );
+  });
+});
+
+describe("railway-api worker health", () => {
+  it("serviceInstanceHasRepo compara repo esperado", () => {
+    assert.equal(
+      serviceInstanceHasRepo(
+        { source: { repo: "cloudsystec/AI-ai-factory-cli" } },
+        DEFAULT_RAILWAY_CLI_REPO
+      ),
+      true
+    );
+    assert.equal(serviceInstanceHasRepo({ source: {} }), false);
+    assert.equal(serviceInstanceHasRepo(null), false);
+  });
+
+  it("isWorkerServiceHealthy exige nome e repo", () => {
+    const tenantId = "bb6d9ded-c649-4134-b3c0-90a844a029b1";
+    const service = { id: "s1", name: workerServiceName(tenantId) };
+    const instance = { source: { repo: DEFAULT_RAILWAY_CLI_REPO } };
+    assert.equal(isWorkerServiceHealthy(service, instance, tenantId), true);
+    assert.equal(
+      isWorkerServiceHealthy(
+        { id: "s1", name: "cli-bb6d9ded-uuid-extra" },
+        instance,
+        tenantId
+      ),
+      false
     );
   });
 });

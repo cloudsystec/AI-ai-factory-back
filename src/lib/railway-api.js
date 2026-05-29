@@ -28,6 +28,40 @@ export function workerServiceName(tenantId) {
   return `cli-${String(tenantId)}`;
 }
 
+/**
+ * @param {string | null | undefined} serviceName
+ * @param {string} tenantId
+ */
+export function isWorkerServiceNameValid(serviceName, tenantId) {
+  return serviceName === workerServiceName(tenantId);
+}
+
+/**
+ * @param {unknown} instance
+ * @param {string} [repo]
+ */
+export function serviceInstanceHasRepo(instance, repo = railwayCliRepo()) {
+  const connected = /** @type {{ source?: { repo?: string } } | null} */ (
+    instance
+  )?.source?.repo;
+  if (!connected) return false;
+  const expected = repo.toLowerCase();
+  const actual = String(connected).toLowerCase();
+  return actual === expected || actual.endsWith(`/${expected.split("/")[1]}`);
+}
+
+/**
+ * @param {unknown} service
+ * @param {unknown} instance
+ * @param {string} tenantId
+ */
+export function isWorkerServiceHealthy(service, instance, tenantId) {
+  const svc = /** @type {{ id?: string, name?: string } | null} */ (service);
+  if (!svc?.id || !instance) return false;
+  if (!isWorkerServiceNameValid(svc.name, tenantId)) return false;
+  return serviceInstanceHasRepo(instance);
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -139,6 +173,18 @@ export async function updateServiceName(serviceId, name) {
     { id: serviceId, input: { name } }
   );
   return data?.serviceUpdate ?? null;
+}
+
+/**
+ * @param {string} serviceId
+ */
+export async function deleteRailwayService(serviceId) {
+  await railwayGraphql(
+    `mutation ServiceDelete($id: String!) {
+      serviceDelete(id: $id)
+    }`,
+    { id: serviceId }
+  );
 }
 
 /**
@@ -376,9 +422,7 @@ export async function applyWorkerServiceConfig(input) {
   const isCreated = createdFromRepo
     ? false
     : needsServiceInstanceCreate(instance);
-  const includeSource = createdFromRepo
-    ? false
-    : (input.includeSource ?? isCreated);
+  const includeSource = !serviceInstanceHasRepo(instance);
 
   await railwayStep("environmentStageChanges", () =>
     stageWorkerServiceConfig(input.environmentId, input.serviceId, {
