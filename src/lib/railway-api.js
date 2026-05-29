@@ -23,6 +23,13 @@ export function railwayCliRegion() {
   );
 }
 
+/** Nome curto e estável por tenant (ex.: cli-bb6d9ded). */
+export function workerServiceName(tenantId) {
+  return `cli-${String(tenantId).slice(0, 8)}`;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * @param {string} query
  * @param {Record<string, unknown>} [variables]
@@ -94,9 +101,13 @@ export async function fetchServiceInstance(serviceId, environmentId) {
 }
 
 /**
- * @param {{ projectId: string, name: string, environmentId: string }} input
+ * Cria serviço já ligado ao repo GitHub (cria ServiceInstance no ambiente).
+ * Preferir a createEmptyService + staging para novos workers.
+ * @param {{ projectId: string, environmentId: string, name: string, repo?: string, branch?: string }} input
  */
-export async function createEmptyService(input) {
+export async function createWorkerService(input) {
+  const repo = input.repo || railwayCliRepo();
+  const branch = input.branch || railwayCliBranch();
   const data = await railwayGraphql(
     `mutation ServiceCreate($input: ServiceCreateInput!) {
       serviceCreate(input: $input) { id name }
@@ -104,14 +115,24 @@ export async function createEmptyService(input) {
     {
       input: {
         projectId: input.projectId,
-        name: input.name,
         environmentId: input.environmentId,
+        name: input.name,
+        source: { repo },
+        branch,
       },
     }
   );
   const svc = data?.serviceCreate;
   if (!svc?.id) throw new Error("serviceCreate não devolveu id");
   return svc;
+}
+
+/**
+ * @deprecated Usar createWorkerService. Mantido só para referência.
+ * @param {{ projectId: string, name: string, environmentId: string }} input
+ */
+export async function createEmptyService(input) {
+  return createWorkerService(input);
 }
 
 /**
@@ -151,15 +172,22 @@ export function toStagedVariableMap(variables) {
  *   variables: Record<string, string>,
  *   isCreated?: boolean,
  *   dockerfilePath?: string,
+ *   includeSource?: boolean,
  * }} config
  */
 export async function stageWorkerServiceConfig(environmentId, serviceId, config) {
   /** @type {Record<string, unknown>} */
   const servicePatch = {
-    isCreated: config.isCreated === true,
-    source: { repo: config.repo, branch: config.branch },
     variables: toStagedVariableMap(config.variables),
   };
+
+  if (config.isCreated === true) {
+    servicePatch.isCreated = true;
+  }
+
+  if (config.includeSource !== false && config.repo) {
+    servicePatch.source = { repo: config.repo, branch: config.branch };
+  }
 
   if (config.dockerfilePath) {
     servicePatch.build = {
@@ -236,6 +264,30 @@ export async function createVolume(input) {
 }
 
 /**
+ * Aguarda ServiceInstance aparecer após commit (Railway aplica async).
+ * @param {string} serviceId
+ * @param {string} environmentId
+ * @param {{ attempts?: number, delayMs?: number }} [opts]
+ */
+export async function waitForServiceInstance(
+  serviceId,
+  environmentId,
+  opts = {}
+) {
+  const attempts = opts.attempts ?? 20;
+  const delayMs = opts.delayMs ?? 2000;
+
+  for (let i = 0; i < attempts; i++) {
+    const { instance } = await fetchServiceInstance(serviceId, environmentId);
+    if (instance) return instance;
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  throw new Error(
+    `ServiceInstance não apareceu no ambiente após ${attempts} tentativas`
+  );
+}
+
+/**
  * @param {string} environmentId
  * @param {string} serviceId
  */
@@ -247,6 +299,21 @@ export async function deployServiceInstance(environmentId, serviceId) {
     { environmentId, serviceId }
   );
   return data?.serviceInstanceDeployV2 ?? null;
+}
+
+/**
+ * Deploy só se a instância existir (evita INTERNAL_SERVER_ERROR em órfãos).
+ * @param {string} environmentId
+ * @param {string} serviceId
+ */
+export async function deployServiceInstanceIfReady(environmentId, serviceId) {
+  const { instance } = await fetchServiceInstance(serviceId, environmentId);
+  if (!instance) {
+    throw new Error(
+      "ServiceInstance não existe no ambiente — confirme commit staged ou recrie o serviço"
+    );
+  }
+  return deployServiceInstance(environmentId, serviceId);
 }
 
 /**
@@ -264,6 +331,7 @@ export function needsServiceInstanceCreate(instance) {
  *   environmentId: string,
  *   serviceId: string,
  *   variables: Record<string, string>,
+ *   includeSource?: boolean,
  * }} input
  */
 export async function applyWorkerServiceConfig(input) {
@@ -276,6 +344,7 @@ export async function applyWorkerServiceConfig(input) {
     fetchServiceInstance(input.serviceId, input.environmentId)
   );
   const isCreated = needsServiceInstanceCreate(instance);
+  const includeSource = input.includeSource ?? isCreated;
 
   await railwayStep("environmentStageChanges", () =>
     stageWorkerServiceConfig(input.environmentId, input.serviceId, {
@@ -285,11 +354,16 @@ export async function applyWorkerServiceConfig(input) {
       variables: input.variables,
       isCreated,
       dockerfilePath,
+      includeSource,
     })
   );
 
   await railwayStep("environmentPatchCommitStaged", () =>
     commitStagedEnvironment(input.environmentId)
+  );
+
+  await railwayStep("waitForServiceInstance", () =>
+    waitForServiceInstance(input.serviceId, input.environmentId)
   );
 }
 

@@ -3,17 +3,47 @@ import { createLogger } from "../lib/logger.js";
 import {
   assertRailwayConfig,
   applyWorkerServiceConfig,
-  createEmptyService,
   createVolume,
-  deployServiceInstance,
+  createWorkerService,
+  deployServiceInstanceIfReady,
+  fetchServiceInstance,
   railwayCliRegion,
   railwayStep,
+  workerServiceName,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
 
 const log = createLogger("worker-deploy");
 
 const PROVISIONING_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Se o serviço foi apagado no Railway, limpa IDs na BD para recriar limpo.
+ * @param {string} tenantId
+ * @param {string | null} serviceId
+ * @param {string} environmentId
+ */
+async function resolveWorkerServiceId(tenantId, serviceId, environmentId) {
+  if (!serviceId) return null;
+
+  try {
+    const { service } = await fetchServiceInstance(serviceId, environmentId);
+    if (service?.id) return service.id;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/not found|does not exist|invalid/i.test(msg)) throw e;
+  }
+
+  log.warn("Serviço Railway ausente — limpar IDs e recriar", {
+    tenantId: tenantId.slice(0, 8),
+    serviceId,
+  });
+  await updateWorkerDeployment(tenantId, {
+    railway_service_id: null,
+    railway_volume_id: null,
+  });
+  return null;
+}
 
 /**
  * @param {string} tenantId
@@ -120,20 +150,31 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
   });
 
   try {
-    let serviceId = row.railway_service_id || null;
+    let serviceId = await resolveWorkerServiceId(
+      tenantId,
+      row.railway_service_id || null,
+      cfg.environmentId
+    );
+    const createdFromRepo = !serviceId;
 
     if (!serviceId) {
-      const prefix = tenantId.slice(0, 8);
+      const name = workerServiceName(tenantId);
       const created = await railwayStep("serviceCreate", () =>
-        createEmptyService({
+        createWorkerService({
           projectId: cfg.projectId,
           environmentId: cfg.environmentId,
-          name: `cli-${prefix}`,
+          name,
         })
       );
       serviceId = created.id;
+      log.info("Serviço Railway criado a partir do repo CLI", {
+        tenantId: tenantId.slice(0, 8),
+        serviceId,
+        name: created.name,
+      });
       await updateWorkerDeployment(tenantId, {
         railway_service_id: serviceId,
+        railway_volume_id: null,
       });
     } else {
       log.info("Reutilizar serviço Railway existente", {
@@ -153,9 +194,10 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
+      includeSource: !createdFromRepo,
     });
 
-    let volumeId = row.railway_volume_id || null;
+    let volumeId = createdFromRepo ? null : row.railway_volume_id || null;
     const mountPath = `/app/data/tenants/${tenantId}`;
 
     if (!volumeId) {
@@ -177,7 +219,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     }
 
     await railwayStep("serviceInstanceDeployV2", () =>
-      deployServiceInstance(cfg.environmentId, serviceId)
+      deployServiceInstanceIfReady(cfg.environmentId, serviceId)
     );
 
     await updateWorkerDeployment(tenantId, {

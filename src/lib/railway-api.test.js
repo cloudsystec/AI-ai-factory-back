@@ -9,6 +9,7 @@ import {
   railwayCliRegion,
   railwayCliRepo,
   toStagedVariableMap,
+  workerServiceName,
 } from "./railway-api.js";
 
 describe("railway-api CLI defaults", () => {
@@ -61,5 +62,14 @@ describe("railway-api service instance", () => {
     assert.equal(needsServiceInstanceCreate(null), true);
     assert.equal(needsServiceInstanceCreate(undefined), true);
     assert.equal(needsServiceInstanceCreate({ region: "us-west1" }), false);
+  });
+});
+
+describe("railway-api worker service name", () => {
+  it("workerServiceName usa prefixo curto do tenant", () => {
+    assert.equal(
+      workerServiceName("bb6d9ded-c649-4134-b3c0-90a844a029b1"),
+      "cli-bb6d9ded"
+    );
   });
 });
