@@ -129,21 +129,6 @@ export async function railwayStep(label, fn) {
 }
 
 /**
- * Liga serviço existente ao repo GitHub (branch de deploy automático).
- * @param {string} serviceId
- * @param {string} repo
- * @param {string} branch
- */
-export async function connectServiceRepo(serviceId, repo, branch) {
-  await railwayGraphql(
-    `mutation ServiceConnect($id: String!, $input: ServiceConnectInput!) {
-      serviceConnect(id: $id, input: $input) { id }
-    }`,
-    { id: serviceId, input: { repo, branch } }
-  );
-}
-
-/**
  * @param {Record<string, string>} variables
  */
 export function toStagedVariableMap(variables) {
@@ -274,7 +259,7 @@ export function needsServiceInstanceCreate(instance) {
 
 /**
  * Configura e aplica deploy do worker (repo + env + região) via staged changes.
- * Não usa serviceConnect: exige ServiceInstance já existente e falha em serviços órfãos.
+ * Repo Git é ligado em environmentStageChanges (source.repo) — não usar serviceConnect.
  * @param {{
  *   environmentId: string,
  *   serviceId: string,
@@ -306,16 +291,6 @@ export async function applyWorkerServiceConfig(input) {
   await railwayStep("environmentPatchCommitStaged", () =>
     commitStagedEnvironment(input.environmentId)
   );
-
-  if (!isCreated && !instance?.source?.repo) {
-    await railwayStep("serviceConnect", () =>
-      connectServiceRepo(input.serviceId, repo, branch).catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (/already|connected|duplicate/i.test(msg)) return;
-        throw e;
-      })
-    );
-  }
 }
 
 export function railwayConfig() {
