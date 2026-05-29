@@ -131,6 +131,9 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
         name: `cli-${prefix}`,
       });
       serviceId = created.id;
+      await updateWorkerDeployment(tenantId, {
+        railway_service_id: serviceId,
+      });
 
       const template = await fetchServiceInstance(
         cfg.templateServiceId,
@@ -142,10 +145,6 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
         serviceId,
         instanceInput
       );
-
-      await updateWorkerDeployment(tenantId, {
-        railway_service_id: serviceId,
-      });
     } else {
       log.info("Reutilizar serviço Railway existente", {
         tenantId: tenantId.slice(0, 8),

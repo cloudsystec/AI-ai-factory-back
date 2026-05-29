@@ -48,8 +48,9 @@ export async function fetchServiceInstance(serviceId, environmentId) {
         rootDirectory
         startCommand
         source {
-          ... on ServiceSourceImage { image }
-          ... on ServiceSourceRepo { repo branch }
+          image
+          repo
+          branch
         }
       }
       service(id: $serviceId) {
