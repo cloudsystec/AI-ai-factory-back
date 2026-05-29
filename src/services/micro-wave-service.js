@@ -51,6 +51,258 @@ export function readBacklogTasks(tenantId, projectSlug) {
  * @param {string} tenantId
  * @param {string} projectSlug
  */
+const TERMINAL_RUNTIME = new Set([
+  "done",
+  "blocked",
+  "running",
+  "review",
+  "testing",
+  "development",
+  "planning",
+]);
+
+/**
+ * @param {object[]} microTasks
+ * @param {object[]} backlog
+ * @param {Map<string, object>} stateByTaskId
+ */
+export function taskDependenciesMet(task, backlog, stateByTaskId) {
+  const deps = Array.isArray(task.dependencies) ? task.dependencies : [];
+  if (deps.length === 0) return true;
+  return deps.every((depId) => {
+    const rt = stateByTaskId?.get(depId);
+    if (rt?.status === "done") return true;
+    const dep = backlog.find((t) => t.id === depId);
+    return dep?.status === "done";
+  });
+}
+
+/**
+ * @param {object} task
+ * @param {Map<string, object>} stateByTaskId
+ */
+export function isTaskDone(task, stateByTaskId) {
+  const rt = stateByTaskId.get(task.id);
+  return rt?.status === "done" || task.status === "done";
+}
+
+/**
+ * @param {object} task
+ * @param {object|undefined} rt
+ */
+export function resolveEffectiveStatus(task, rt) {
+  if (rt?.status === "done" || task.status === "done") return "done";
+  if (rt?.status) return rt.status;
+  return task.status || "todo";
+}
+
+/**
+ * @param {object} task
+ * @param {object|undefined} rt
+ */
+export function taskStatusSyncWarning(task, rt) {
+  const rtDone = rt?.status === "done";
+  const backlogDone = task.status === "done";
+  if (rtDone && !backlogDone) {
+    return "Runtime concluído, mas backlog ainda não está done — alinhe o backlog para desbloquear dependências.";
+  }
+  if (backlogDone && rt && rt.status !== "done") {
+    return `Backlog done, runtime em ${rt.status} — sincronize tasks-state.json.`;
+  }
+  return null;
+}
+
+/**
+ * Tasks elegíveis no A fazer para um micro.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ */
+export function getEligibleTodoTasks(tenantId, projectSlug, microId) {
+  const backlog = readBacklogTasks(tenantId, projectSlug);
+  const tasksState = readTasksState(tenantId, projectSlug);
+  const stateByTaskId = new Map(tasksState.map((t) => [t.id, t]));
+  const microTasks = backlog.filter((t) => t.sourceMicroId === microId);
+
+  const paused = microTasks.filter((t) => {
+    if (isTaskDone(t, stateByTaskId)) return false;
+    const st = stateByTaskId.get(t.id);
+    return st?.status === "paused" && st.lastCompletedStep;
+  });
+  const pausedIds = new Set(paused.map((t) => t.id));
+
+  const todo = microTasks
+    .filter((t) => {
+      if (pausedIds.has(t.id)) return false;
+      if (isTaskDone(t, stateByTaskId)) return false;
+      if (t.status !== "todo" || t.approved !== true) return false;
+      if (!taskDependenciesMet(t, backlog, stateByTaskId)) return false;
+      const rt = stateByTaskId.get(t.id);
+      if (rt && TERMINAL_RUNTIME.has(rt.status)) return false;
+      return true;
+    })
+    .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
+
+  const seen = new Set();
+  const eligible = [];
+  for (const t of [...paused, ...todo]) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    eligible.push(t);
+  }
+
+  return { eligible, backlog, stateByTaskId, microTasks };
+}
+
+/**
+ * Vista detalhada das tasks do micro aberto (dependências + elegibilidade para dispatch).
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ */
+export function getOpenMicroTasksDetail(tenantId, projectSlug, microId) {
+  const { eligible, microTasks, stateByTaskId, backlog } = getEligibleTodoTasks(
+    tenantId,
+    projectSlug,
+    microId
+  );
+  const eligibleIds = new Set(eligible.map((t) => t.id));
+
+  function dependencyRows(task) {
+    const deps = Array.isArray(task.dependencies) ? task.dependencies : [];
+    return deps.map((depId) => {
+      const rt = stateByTaskId.get(depId);
+      const dep = backlog.find((t) => t.id === depId);
+      const done = rt?.status === "done" || dep?.status === "done";
+      return {
+        id: depId,
+        title: dep?.title || depId,
+        done,
+        status: rt?.status || dep?.status || "—",
+      };
+    });
+  }
+
+  function dispatchMeta(task) {
+    const rt = stateByTaskId.get(task.id);
+    if (isTaskDone(task, stateByTaskId)) {
+      return { dispatchEligible: false, dispatchBlockReason: "Concluída" };
+    }
+    if (eligibleIds.has(task.id)) {
+      return { dispatchEligible: true, dispatchBlockReason: null };
+    }
+    if (task.approved !== true) {
+      return { dispatchEligible: false, dispatchBlockReason: "Aguarda aprovação do Tech Lead" };
+    }
+    if (rt && TERMINAL_RUNTIME.has(rt.status)) {
+      return {
+        dispatchEligible: false,
+        dispatchBlockReason: `Em pipeline (${rt.status}) — ocupa slot de execução`,
+      };
+    }
+    if (task.status !== "todo") {
+      return {
+        dispatchEligible: false,
+        dispatchBlockReason: `Backlog: ${task.status} (só todo aprovado entra na fila)`,
+      };
+    }
+    const pending = dependencyRows(task).filter((d) => !d.done);
+    if (pending.length > 0) {
+      return {
+        dispatchEligible: false,
+        dispatchBlockReason: `Depende de: ${pending.map((d) => d.id).join(", ")}`,
+      };
+    }
+    return { dispatchEligible: false, dispatchBlockReason: "Não elegível para dispatch" };
+  }
+
+  const tasks = [...microTasks]
+    .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+    .map((t) => {
+      const rt = stateByTaskId.get(t.id);
+      const meta = dispatchMeta(t);
+      const effectiveStatus = resolveEffectiveStatus(t, rt);
+      const syncWarning = taskStatusSyncWarning(t, rt);
+      return {
+        id: t.id,
+        title: t.title,
+        priority: t.priority ?? null,
+        approved: t.approved === true,
+        backlogStatus: t.status,
+        runtimeStatus: rt?.status ?? null,
+        effectiveStatus,
+        statusInSync: !syncWarning,
+        syncWarning,
+        dependencies: dependencyRows(t),
+        ...meta,
+      };
+    });
+
+  return {
+    microId,
+    eligibleCount: eligible.length,
+    totalCount: tasks.length,
+    parallelHint:
+      eligible.length === 0
+        ? "Nenhuma task elegível agora — bots em Play não recebem jobs task até haver todo aprovado com dependências satisfeitas."
+        : eligible.length === 1
+          ? "1 task elegível — no máximo 1 bot task em paralelo neste micro (cadeia de dependências)."
+          : `${eligible.length} tasks elegíveis — até ${eligible.length} bots podem correr tasks deste micro em paralelo.`,
+    tasks,
+  };
+}
+
+/**
+ * Micro ainda com tasks não concluídas (backlog ou runtime).
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ */
+export function microHasUndeliveredTasks(tenantId, projectSlug, microId) {
+  const backlog = readBacklogTasks(tenantId, projectSlug);
+  const stateByTaskId = new Map(
+    readTasksState(tenantId, projectSlug).map((t) => [t.id, t])
+  );
+  const microTasks = backlog.filter((t) => t.sourceMicroId === microId);
+  if (microTasks.length === 0) return false;
+  return microTasks.some((t) => {
+    const rt = stateByTaskId.get(t.id);
+    const status = rt?.status ?? t.status;
+    return status !== "done";
+  });
+}
+
+/**
+ * Próximo micro aprovado sem tasks (para scope-tasks-only), após o micro aberto.
+ * Só sugere quando o micro aberto não tem trabalho de entrega pendente.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function getNextMicroForTaskAnalysis(tenantId, projectSlug) {
+  const wave = await getMicroWaveState(tenantId, projectSlug);
+  const openId = wave.openMicroId;
+  if (!openId) return null;
+
+  const { eligible } = getEligibleTodoTasks(tenantId, projectSlug, openId);
+  if (eligible.length > 0) return null;
+
+  if (microHasUndeliveredTasks(tenantId, projectSlug, openId)) {
+    return null;
+  }
+
+  const approved = wave.micros || [];
+  const openIdx = approved.findIndex((m) => m.id === openId);
+  if (openIdx < 0) return null;
+
+  for (let i = openIdx + 1; i < approved.length; i += 1) {
+    const m = approved[i];
+    if (m.wavePhase === "released" || m.release) continue;
+    const count = wave.taskCountByMicro?.[m.id] ?? 0;
+    if (count === 0) return m.id;
+  }
+  return null;
+}
+
 export async function getMicroWaveState(tenantId, projectSlug) {
   const micros = readMicrosFromVolume(tenantId, projectSlug);
   const tasks = readBacklogTasks(tenantId, projectSlug);
@@ -137,18 +389,43 @@ export async function assertMicroWaveAllowsJob(tenantId, projectSlug, opts) {
   }
 
   if (kind === "scope-tasks-only") {
-    if (!openId) {
+    const targetMicroId = opts.microId || openId;
+    if (!targetMicroId) {
       throw Object.assign(
-        new Error("Nenhum micro em onda aberta para gerar tasks."),
+        new Error("Nenhum micro para gerar tasks."),
         { status: 400, code: "no_open_micro" }
       );
     }
-    const om = wave.openMicro;
-    if (om?.wavePhase && !["open"].includes(om.wavePhase) && om.taskDeliveryStatus !== "open") {
+    const micros = readMicrosFromVolume(tenantId, projectSlug);
+    const target = micros.find((m) => m.id === targetMicroId);
+    if (!target || target.approved !== true || target.validationStatus !== "approved") {
       throw Object.assign(
-        new Error(`Micro ${openId} não está em fase de desenvolvimento (open).`),
-        { status: 400, code: "micro_not_open" }
+        new Error(`Micro ${targetMicroId} não aprovado.`),
+        { status: 400, code: "micro_not_approved" }
       );
+    }
+    const { rows: rel } = await query(
+      `SELECT 1 FROM micro_releases WHERE tenant_id = $1 AND project_slug = $2 AND micro_id = $3`,
+      [tenantId, projectSlug, targetMicroId]
+    );
+    if (rel.length > 0) {
+      throw Object.assign(
+        new Error(`Micro ${targetMicroId} já tem release.`),
+        { status: 400, code: "micro_released" }
+      );
+    }
+    if (targetMicroId === openId) {
+      const om = wave.openMicro;
+      if (
+        om?.wavePhase &&
+        !["open"].includes(om.wavePhase) &&
+        om.taskDeliveryStatus !== "open"
+      ) {
+        throw Object.assign(
+          new Error(`Micro ${openId} não está em fase de desenvolvimento (open).`),
+          { status: 400, code: "micro_not_open" }
+        );
+      }
     }
     return;
   }

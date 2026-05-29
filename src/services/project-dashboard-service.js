@@ -5,6 +5,7 @@ import {
   readLiveTaskDetail,
   readLiveTasks,
 } from "./workspace-dashboard-reader.js";
+import { getOpenMicroTasksDetail } from "./micro-wave-service.js";
 
 /**
  * @param {string} tenantId
@@ -136,13 +137,39 @@ export async function getTasksForDashboard(tenantId, projectSlug, opts = {}) {
 /**
  * @param {string} tenantId
  * @param {string} projectSlug
+ * @param {object|null} state
+ */
+function enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, state) {
+  if (!state || typeof state !== "object" || !state.openMicro?.id) {
+    return state;
+  }
+  try {
+    const detail = getOpenMicroTasksDetail(
+      tenantId,
+      projectSlug,
+      state.openMicro.id
+    );
+    return { ...state, openMicroTasksDetail: detail };
+  } catch {
+    return state;
+  }
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
  * @param {{ source?: string }} [opts]
  */
 export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}) {
   if (opts.source === "db") {
     const state = await getScopeStateSnapshot(tenantId, projectSlug);
     const meta = await buildDashboardMeta(tenantId, projectSlug, false);
-    return state ? { ...state, dashboardMeta: meta } : null;
+    return state
+      ? enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+          ...state,
+          dashboardMeta: meta,
+        })
+      : null;
   }
 
   const live = await readLiveScopeState(tenantId, projectSlug);
@@ -157,12 +184,20 @@ export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}
         live.scopeState
       );
     }
-    return { ...live.scopeState, dashboardMeta: meta };
+    return enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+      ...live.scopeState,
+      dashboardMeta: meta,
+    });
   }
 
   const state = await getScopeStateSnapshot(tenantId, projectSlug);
   const meta = await buildDashboardMeta(tenantId, projectSlug, false);
-  return state ? { ...state, dashboardMeta: meta } : null;
+  return state
+    ? enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+        ...state,
+        dashboardMeta: meta,
+      })
+    : null;
 }
 
 /**

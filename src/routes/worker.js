@@ -34,6 +34,22 @@ import {
 } from "../services/project-dashboard-service.js";
 import { broadcast, registerJobTenant } from "../lib/ws-hub.js";
 import { getExecutionState } from "../services/execution-dispatcher-service.js";
+import {
+  getBotEmailForSlot,
+  listWorkersStatus,
+  workerSlotFromWorkerId,
+} from "../services/worker-bot-service.js";
+import { parseWorkerSlot } from "../services/job-service.js";
+import { syncWorkerRuntime } from "../services/worker-runtime-service.js";
+import {
+  claimPrResolutionForWorker,
+  finishPrResolution,
+} from "../services/pr-resolution-service.js";
+import {
+  dispatchTickForWorker,
+  getActiveExecutionForSlot,
+} from "../services/execution-gate-service.js";
+import { ensureAllPendingGitProvisions } from "../services/git-provision-service.js";
 
 export const workerRouter = Router();
 workerRouter.use(requireWorker);
@@ -51,17 +67,27 @@ workerRouter.post("/register", async (req, res) => {
     return res.status(403).json({ code: "plan_inactive" });
   }
   const workerId = req.body?.workerId || `worker-${tenantId.slice(0, 8)}`;
+  const workerSlot = parseWorkerSlot(workerId);
   await query(
-    `INSERT INTO tenant_workers (tenant_id, worker_id, last_heartbeat)
-     VALUES ($1, $2, now())
-     ON CONFLICT (tenant_id) DO UPDATE SET worker_id = $2, last_heartbeat = now()`,
-    [tenantId, workerId]
+    `INSERT INTO tenant_workers (tenant_id, worker_id, worker_slot, last_heartbeat, slots_in_use)
+     VALUES ($1, $2, $3, now(), 0)
+     ON CONFLICT (tenant_id, worker_slot) DO UPDATE SET
+       worker_id = EXCLUDED.worker_id,
+       last_heartbeat = now()`,
+    [tenantId, workerId, workerSlot]
   );
   await query(
     "UPDATE tenants SET worker_status = 'online', updated_at = now() WHERE id = $1",
     [tenantId]
   );
-  res.json({ ok: true, workerId });
+  broadcast(tenantId, { type: "workers" });
+  broadcast(tenantId, { type: "billing" });
+  res.json({ ok: true, workerId, workerSlot });
+});
+
+workerRouter.get("/bots-ready", async (req, res) => {
+  const status = await listWorkersStatus(req.workerTenantId);
+  res.json(status);
 });
 
 workerRouter.post("/claim", async (req, res) => {
@@ -69,16 +95,34 @@ workerRouter.post("/claim", async (req, res) => {
     return res.status(403).json({ error: "Tenant mismatch" });
   }
   const workerId = req.body?.workerId || "default";
-  const job = await claimJob(req.workerTenantId, workerId);
-  if (!job) return res.json({ job: null });
+  const workerSlot = workerSlotFromWorkerId(workerId);
+  const provisionOnly = req.body?.provisionOnly === true;
+  const claimed = await claimJob(req.workerTenantId, workerId, {
+    provisionOnly,
+  });
+  if (claimed?.error === "bot_not_configured") {
+    return res.json({
+      job: null,
+      error: "bot_not_configured",
+      workerSlot: claimed.workerSlot ?? workerSlot,
+    });
+  }
+  const job = claimed?.job;
+  if (!job) return res.json({ job: null, workerSlot });
 
   const executorUserId = await resolveJobExecutorUserId(
     req.workerTenantId,
     job
   );
   let cursorApiKey = null;
+  let botEmail = null;
   if (CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
-    cursorApiKey = await resolveCursorApiKeyForJob(req.workerTenantId, job);
+    cursorApiKey = await resolveCursorApiKeyForJob(
+      req.workerTenantId,
+      job,
+      workerSlot
+    );
+    botEmail = await getBotEmailForSlot(req.workerTenantId, workerSlot);
     if (!cursorApiKey) {
       await completeJob(req.workerTenantId, job.id, {
         status: "failed",
@@ -87,7 +131,8 @@ workerRouter.post("/claim", async (req, res) => {
       });
       return res.json({
         job: null,
-        error: "executor_cursor_key_missing",
+        error: "bot_not_configured",
+        workerSlot,
         jobId: job.id,
       });
     }
@@ -115,9 +160,13 @@ workerRouter.post("/claim", async (req, res) => {
     kind: job.kind,
     project: job.project_slug,
     taskId: job.task_id || null,
+    workerSlot,
   });
+  broadcast(req.workerTenantId, { type: "billing" });
 
   res.json({
+    workerSlot,
+    botEmail,
     job: {
       id: job.id,
       projectSlug: job.project_slug,
@@ -128,6 +177,8 @@ workerRouter.post("/claim", async (req, res) => {
       requestedByUserId: executorUserId ?? job.requested_by_user_id ?? null,
       requestedByEmail: job.requested_by_email ?? null,
       cursorApiKey,
+      botEmail,
+      workerSlot,
       githubInstallationToken,
       git: gitProject
         ? {
@@ -157,6 +208,12 @@ workerRouter.post("/projects/:slug/git/provision-complete", async (req, res) => 
       error || "provision failed"
     );
   }
+  broadcast(req.workerTenantId, { type: "billing" });
+  broadcast(req.workerTenantId, {
+    type: "dashboard",
+    project: slug,
+    reason: "git-provision",
+  });
   res.json({ ok: true });
 });
 
@@ -496,10 +553,168 @@ workerRouter.post(
   }
 );
 
-workerRouter.post("/heartbeat", async (req, res) => {
-  await query(
-    "UPDATE tenant_workers SET last_heartbeat = now() WHERE tenant_id = $1",
-    [req.workerTenantId]
+workerRouter.post("/ensure-git-provision", async (req, res) => {
+  try {
+    const result = await ensureAllPendingGitProvisions(req.workerTenantId);
+    if (result.enqueued.length > 0) {
+      broadcast(req.workerTenantId, { type: "billing" });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+workerRouter.get("/active-projects", async (req, res) => {
+  const workerId = String(req.query.workerId ?? req.body?.workerId ?? "default");
+  const workerSlot = parseWorkerSlot(workerId);
+  const projects = await getActiveExecutionForSlot(
+    req.workerTenantId,
+    workerSlot
   );
+  res.json({ projects, workerSlot });
+});
+
+workerRouter.post("/dispatch-tick", async (req, res) => {
+  const workerId = req.body?.workerId || "default";
+  const workerSlot = parseWorkerSlot(workerId);
+  try {
+    const result = await dispatchTickForWorker(
+      req.workerTenantId,
+      workerSlot
+    );
+    let anyEnqueued = false;
+    for (const p of result.projects || []) {
+      if (p.enqueued?.length) {
+        anyEnqueued = true;
+        const { broadcastWorkersAndJobs } = await import("../lib/ws-hub.js");
+        broadcastWorkersAndJobs(req.workerTenantId, p.project, p.enqueued);
+      }
+    }
+    if (anyEnqueued) {
+      broadcast(req.workerTenantId, { type: "billing" });
+    }
+    res.json({ ...result, workerSlot });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+workerRouter.post("/heartbeat", async (req, res) => {
+  const workerId = req.body?.workerId;
+  if (workerId) {
+    const workerSlot = parseWorkerSlot(workerId);
+    await query(
+      `UPDATE tenant_workers SET last_heartbeat = now()
+       WHERE tenant_id = $1 AND worker_slot = $2`,
+      [req.workerTenantId, workerSlot]
+    );
+  } else {
+    await query(
+      "UPDATE tenant_workers SET last_heartbeat = now() WHERE tenant_id = $1",
+      [req.workerTenantId]
+    );
+  }
   res.json({ ok: true });
+});
+
+/**
+ * CLI reporta ocupação real por slot; o back reconcilia jobs/pools desalinhados.
+ * Body: { slots: [{ slot, workerId?, busy, jobId? }], startup?: boolean }
+ */
+workerRouter.post("/pr-resolution/claim", async (req, res) => {
+  const workerId = req.body?.workerId || "default";
+  const workerSlot = parseWorkerSlot(workerId);
+  try {
+    const work = await claimPrResolutionForWorker(
+      req.workerTenantId,
+      workerSlot
+    );
+    if (!work) {
+      return res.json({ work: null });
+    }
+    broadcast(req.workerTenantId, { type: "billing" });
+    res.json({ work });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+workerRouter.post("/pr-resolution/complete", async (req, res) => {
+  const projectSlug = String(req.body?.projectSlug ?? "").trim();
+  const taskId = String(req.body?.taskId ?? "").trim();
+  const status = String(req.body?.status ?? "failed");
+  const summary = req.body?.summary ? String(req.body.summary) : null;
+  if (!projectSlug || !taskId) {
+    return res.status(400).json({ error: "projectSlug e taskId obrigatórios" });
+  }
+  try {
+    const result = await finishPrResolution(
+      req.workerTenantId,
+      projectSlug,
+      taskId,
+      { status, summary }
+    );
+    broadcast(req.workerTenantId, { type: "billing" });
+    broadcast(req.workerTenantId, {
+      type: "dashboard",
+      project: projectSlug,
+      reason: "pr-resolution",
+    });
+    if (result.dispatched?.enqueued?.length) {
+      const { broadcastWorkersAndJobs } = await import("../lib/ws-hub.js");
+      broadcastWorkersAndJobs(
+        req.workerTenantId,
+        projectSlug,
+        result.dispatched.enqueued
+      );
+    }
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+workerRouter.post("/runtime-sync", async (req, res) => {
+  const { slots, startup } = req.body ?? {};
+  try {
+    const result = await syncWorkerRuntime(req.workerTenantId, {
+      slots,
+      startup: startup === true,
+    });
+
+    broadcast(req.workerTenantId, { type: "billing" });
+
+    for (const f of result.failed) {
+      broadcast(req.workerTenantId, {
+        type: "job:status",
+        jobId: f.jobId,
+        status: "failed",
+        project: f.project,
+        reason: "worker_runtime_reconciled",
+      });
+    }
+
+    for (const ex of result.executionUpdates) {
+      broadcast(req.workerTenantId, {
+        type: "execution",
+        project: ex.project,
+        continuousActive: ex.continuousActive,
+        pauseAfterCurrent: ex.pauseAfterCurrent,
+        selectedWorkerSlots: ex.selectedWorkerSlots,
+        reason: "runtime_sync",
+      });
+    }
+
+    for (const d of result.dispatched) {
+      if (d.enqueued?.length) {
+        const { broadcastWorkersAndJobs } = await import("../lib/ws-hub.js");
+        broadcastWorkersAndJobs(req.workerTenantId, d.project, d.enqueued);
+      }
+    }
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });

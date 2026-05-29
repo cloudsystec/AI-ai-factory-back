@@ -46,7 +46,7 @@ async function main() {
   fs.writeFileSync(envPath, lines.join("\n") + "\n", "utf-8");
   console.log("Escrito:", envPath);
   console.log(
-    "Nota: CURSOR_API_KEY por executor é enviada no claim de cada job (não no .env)."
+    "Nota: CURSOR_API_KEY e email do bot vêm no claim de cada job por slot (não no .env)."
   );
   await getPool().end();
 }

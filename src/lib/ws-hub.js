@@ -45,6 +45,30 @@ export function broadcast(tenantId, event) {
 }
 
 /**
+ * Atualiza painel de workers/slots no front (billing summary + robots).
+ * @param {string} tenantId
+ * @param {string} [projectSlug]
+ * @param {Array<{ jobId?: string, kind?: string, taskId?: string }>} [enqueued]
+ */
+export function broadcastWorkersAndJobs(tenantId, projectSlug, enqueued = []) {
+  broadcast(tenantId, { type: "billing" });
+  if (enqueued.length > 0) {
+    broadcast(tenantId, { type: "workers" });
+  }
+  for (const item of enqueued) {
+    if (!item.jobId) continue;
+    broadcast(tenantId, {
+      type: "job:status",
+      jobId: item.jobId,
+      status: "queued",
+      kind: item.kind,
+      project: projectSlug,
+      taskId: item.taskId ?? null,
+    });
+  }
+}
+
+/**
  * Initialise the WebSocket server on the given HTTP server.
  * @param {import("http").Server} server
  */

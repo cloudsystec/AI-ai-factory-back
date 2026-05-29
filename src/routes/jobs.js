@@ -8,6 +8,7 @@ import {
 import { getCapabilitiesForUser } from "../services/user-service.js";
 import { requireCapability } from "../middleware/permissions.js";
 import { assertExecutorCanRunJobs } from "../services/user-service.js";
+import { assertAtLeastOneBotReady } from "../services/worker-bot-service.js";
 import {
   readJobLogFull,
   subscribeJobLogLive,
@@ -17,14 +18,23 @@ import {
   completeJob,
   getActiveJobForTenant,
   getJobById,
+  getJobForWorkerSlot,
   getJobLogs,
   getLatestJobForProject,
+  parseWorkerSlot,
   queueJob,
 } from "../services/job-service.js";
+import { query } from "../db/pool.js";
 import { broadcast, registerJobTenant } from "../lib/ws-hub.js";
 
 function jobToJson(row) {
   if (!row) return null;
+  const workerSlot =
+    row.worker_slot != null
+      ? Number(row.worker_slot)
+      : row.worker_id
+        ? parseWorkerSlot(row.worker_id)
+        : null;
   return {
     id: row.id,
     kind: row.kind,
@@ -35,7 +45,18 @@ function jobToJson(row) {
     startedAt: row.started_at,
     finishedAt: row.finished_at ?? null,
     exitCode: row.exit_code ?? null,
+    workerSlot: Number.isFinite(workerSlot) ? workerSlot : null,
   };
+}
+
+async function jobToJsonWithSlot(row) {
+  if (!row) return null;
+  if (row.worker_slot != null || !row.id) return jobToJson(row);
+  const { rows } = await query(
+    `SELECT worker_slot FROM work_locks WHERE job_id = $1 LIMIT 1`,
+    [row.id]
+  );
+  return jobToJson({ ...row, worker_slot: rows[0]?.worker_slot ?? null });
 }
 
 export const jobsRouter = Router();
@@ -52,6 +73,7 @@ function countLogLines(text) {
 jobsRouter.post("/", requireCapability("execute"), async (req, res) => {
   try {
     await assertExecutorCanRunJobs(req.user.id);
+    await assertAtLeastOneBotReady(req.user.tenantId);
     const result = await queueJob(req.user.tenantId, req.body ?? {}, {
       requestedByUserId: req.user.id,
     });
@@ -87,6 +109,23 @@ jobsRouter.get("/latest", async (req, res) => {
     return res.status(400).json({ error: "query project obrigatório (slug válido)" });
   }
   const job = await getLatestJobForProject(req.user.tenantId, project);
+  res.json({ job: await jobToJsonWithSlot(job) });
+});
+
+jobsRouter.get("/by-slot", async (req, res) => {
+  const project = String(req.query.project ?? "").trim();
+  const workerSlot = Number(req.query.slot);
+  if (!project || !isValidProjectSlug(project)) {
+    return res.status(400).json({ error: "query project obrigatório (slug válido)" });
+  }
+  if (!Number.isInteger(workerSlot) || workerSlot < 1) {
+    return res.status(400).json({ error: "query slot inválido" });
+  }
+  const job = await getJobForWorkerSlot(
+    req.user.tenantId,
+    project,
+    workerSlot
+  );
   res.json({ job: jobToJson(job) });
 });
 
@@ -284,5 +323,5 @@ jobsRouter.get("/:id", async (req, res) => {
   if (!job || job.tenant_id !== req.user.tenantId) {
     return res.status(404).json({ error: "Job não encontrado" });
   }
-  res.json({ job: jobToJson(job) });
+  res.json({ job: await jobToJsonWithSlot(job) });
 });

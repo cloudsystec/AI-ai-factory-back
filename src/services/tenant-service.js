@@ -56,7 +56,10 @@ export async function upsertTenant(input) {
     ]
   );
 
-  return rows[0];
+  const tenant = rows[0];
+  const { ensureWorkerBotRows } = await import("./worker-bot-service.js");
+  await ensureWorkerBotRows(tenant.id);
+  return tenant;
 }
 
 /**

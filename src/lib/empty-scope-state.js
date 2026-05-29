@@ -9,6 +9,8 @@ export function emptyScopeState(project) {
     macroId: project,
     paths: { macro: "", micro: "", backlog: "" },
     macroExists: false,
+    macroScopeMd: "",
+    macroEditable: true,
     microCount: 0,
     microsPendingPo: 0,
     microsApproved: 0,
@@ -32,5 +34,6 @@ export function emptyScopeState(project) {
     ],
     devPipelineActive: false,
     wavesCompleteScenario: false,
+    micros: [],
   };
 }

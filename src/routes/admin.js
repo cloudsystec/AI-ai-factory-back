@@ -24,6 +24,12 @@ import {
   setTenantCursorAdminKey,
   upsertTenant,
 } from "../services/tenant-service.js";
+import {
+  countBotsReady,
+  ensureWorkerBotRows,
+  listWorkersStatus,
+  setBotConfigForSlot,
+} from "../services/worker-bot-service.js";
 
 export const adminRouter = Router();
 adminRouter.use(requirePlatformAdmin);
@@ -55,10 +61,20 @@ async function assertTenantProject(tenantId, slug) {
 
 adminRouter.get("/tenants", async (_req, res) => {
   const { rows } = await query(
-    `SELECT id, email, name, plan_id, plan_active_until, users_max
+    `SELECT id, email, name, plan_id, plan_active_until, users_max, agent_slots_max
      FROM tenants ORDER BY COALESCE(NULLIF(name, ''), email)`
   );
-  res.json({ tenants: rows });
+  const tenants = await Promise.all(
+    rows.map(async (t) => {
+      const botsConfiguredCount = await countBotsReady(t.id);
+      return {
+        ...t,
+        botsTotal: t.agent_slots_max,
+        botsConfiguredCount,
+      };
+    })
+  );
+  res.json({ tenants });
 });
 
 adminRouter.post("/tenants", async (req, res) => {
@@ -78,6 +94,7 @@ adminRouter.post("/tenants", async (req, res) => {
     }
 
     const tenant = await upsertTenant({ email, name, planId, planDays });
+    await ensureWorkerBotRows(tenant.id);
 
     const auditor = await createTenantUser(
       tenant.id,
@@ -264,6 +281,49 @@ adminRouter.put("/tenants/:tenantId/users/:userId/cursor-api-key", async (req, r
   }
 });
 
+adminRouter.get("/tenants/:tenantId/workers", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    res.json(await listWorkersStatus(req.params.tenantId));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.get("/tenants/:tenantId/workers/:slot", async (req, res) => {
+  try {
+    const slot = Number(req.params.slot);
+    const status = await listWorkersStatus(req.params.tenantId);
+    const worker = status.workers.find((w) => w.slot === slot);
+    if (!worker) {
+      return res.status(404).json({ error: "Slot não encontrado" });
+    }
+    res.json({ worker, slotsMax: status.slotsMax });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+adminRouter.put("/tenants/:tenantId/workers/:slot", async (req, res) => {
+  try {
+    const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+      req.params.tenantId,
+    ]);
+    if (!rows[0]) return res.status(404).json({ error: "Tenant não encontrado" });
+    const slot = Number(req.params.slot);
+    const worker = await setBotConfigForSlot(req.params.tenantId, slot, {
+      botEmail: req.body?.botEmail,
+      cursorWorkerApiKey: req.body?.cursorWorkerApiKey,
+    });
+    res.json({ worker });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
+  }
+});
+
 adminRouter.put("/tenants/:tenantId/cursor-admin-key", async (req, res) => {
   try {
     const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
@@ -289,6 +349,19 @@ adminRouter.patch("/tenants/:tenantId", async (req, res) => {
     if (req.body?.usersMax != null) {
       const r = await setTenantUsersMax(req.params.tenantId, req.body.usersMax);
       return res.json({ ok: true, ...r });
+    }
+    if (req.body?.agentSlotsMax != null) {
+      const n = Number(req.body.agentSlotsMax);
+      if (!Number.isInteger(n) || n < 1 || n > 32) {
+        return res.status(400).json({ error: "agentSlotsMax deve ser inteiro 1–32" });
+      }
+      await query(
+        `UPDATE tenants SET agent_slots_max = $2, updated_at = now() WHERE id = $1`,
+        [req.params.tenantId, n]
+      );
+      const { ensureWorkerBotRows } = await import("../services/worker-bot-service.js");
+      await ensureWorkerBotRows(req.params.tenantId);
+      return res.json({ ok: true, agentSlotsMax: n });
     }
     res.status(400).json({ error: "Nada para atualizar" });
   } catch (e) {

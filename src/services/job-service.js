@@ -43,6 +43,51 @@ export function parseWorkerSlot(workerId) {
   return m ? Number(m[1]) : 1;
 }
 
+/** Prioridade menor = claim primeiro (tasks paralelas em Play contínuo). */
+const CLAIM_KIND_PRIORITY = {
+  task: 0,
+  "scope-tasks-only": 10,
+  develop: 20,
+  scope: 30,
+  provision: 40,
+  "tech-lead-review": 50,
+  "micro-integration-qa": 60,
+  "micro-release": 70,
+};
+
+/**
+ * @param {import('pg').PoolClient} client
+ * @param {string} tenantId
+ */
+async function loadContinuousProjects(client, tenantId) {
+  const { rows } = await client.query(
+    `SELECT project_slug, selected_worker_slots
+     FROM tenant_execution
+     WHERE tenant_id = $1 AND continuous_active = true`,
+    [tenantId]
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const slots = Array.isArray(row.selected_worker_slots)
+      ? row.selected_worker_slots
+      : JSON.parse(row.selected_worker_slots || "[]");
+    map.set(row.project_slug, slots);
+  }
+  return map;
+}
+
+/**
+ * @param {object} candidate
+ * @param {Map<string, number[]>} continuousByProject
+ */
+function claimPriority(candidate, continuousByProject) {
+  const base = CLAIM_KIND_PRIORITY[candidate.kind] ?? 50;
+  const slots = continuousByProject.get(candidate.project_slug);
+  if (!slots?.length) return base + 100;
+  if (candidate.kind === "task") return base;
+  return base + 5;
+}
+
 /**
  * @param {string} tenantId
  * @param {{ kind: string, project: string, taskId?: string, tasksOnly?: boolean }} body
@@ -81,6 +126,7 @@ export async function queueJob(tenantId, body, opts = {}) {
       kind,
       taskId: body.taskId,
       macroId: body.project,
+      microId: body.microId || null,
     });
   }
 
@@ -155,10 +201,6 @@ export async function queueProvisionJob(tenantId, input) {
     );
   }
 
-  if (t.agent_slots_in_use >= t.agent_slots_max) {
-    throw Object.assign(new Error("Todos os slots ocupados"), { status: 429 });
-  }
-
   const id = randomUUID();
   await query(
     `INSERT INTO jobs (id, tenant_id, project_slug, kind, status, payload)
@@ -176,24 +218,93 @@ export async function queueProvisionJob(tenantId, input) {
 /**
  * @param {string} tenantId
  */
-export async function claimJob(tenantId, workerId) {
+/**
+ * @param {string} tenantId
+ * @param {string} workerId
+ * @param {{ provisionOnly?: boolean }} [opts]
+ */
+export async function claimJob(tenantId, workerId, opts = {}) {
+  const provisionOnly = opts.provisionOnly === true;
   const workerSlot = parseWorkerSlot(workerId);
+  const { isBotReady } = await import("./worker-bot-service.js");
+  if (!(await isBotReady(tenantId, workerSlot))) {
+    return { job: null, error: "bot_not_configured", workerSlot };
+  }
+
+  const { getActiveExecutionForSlot } = await import(
+    "./execution-gate-service.js"
+  );
+  const activeProjects = await getActiveExecutionForSlot(tenantId, workerSlot);
+  const activeProjectSet = new Set(
+    activeProjects.map((p) => p.projectSlug)
+  );
+  if (!provisionOnly && activeProjectSet.size === 0) {
+    return { job: null, workerSlot };
+  }
+
   const client = await (await import("../db/pool.js")).getPool().connect();
   try {
     await client.query("BEGIN");
+    const { rows: tenantRows } = await client.query(
+      `SELECT agent_slots_max, agent_slots_in_use FROM tenants WHERE id = $1 FOR UPDATE`,
+      [tenantId]
+    );
+    const tenantRow = tenantRows[0];
+    if (
+      tenantRow &&
+      Number(tenantRow.agent_slots_in_use) >= Number(tenantRow.agent_slots_max)
+    ) {
+      await client.query("COMMIT");
+      return { job: null, workerSlot };
+    }
+
+    const continuousByProject = await loadContinuousProjects(client, tenantId);
+
     const { rows: jobs } = await client.query(
       `SELECT j.id, j.project_slug, j.kind, j.macro_id, j.task_id, j.payload,
-              j.requested_by_user_id, u.email AS requested_by_email
+              j.requested_by_user_id, u.email AS requested_by_email, j.created_at
        FROM jobs j
        LEFT JOIN users u ON u.id = j.requested_by_user_id
        WHERE j.tenant_id = $1 AND j.status = 'queued'
-       ORDER BY CASE WHEN j.kind = 'provision' THEN 0 ELSE 1 END, j.created_at ASC
        FOR UPDATE OF j SKIP LOCKED`,
       [tenantId]
     );
 
+    const sorted = [...jobs].sort((a, b) => {
+      const pa = claimPriority(a, continuousByProject);
+      const pb = claimPriority(b, continuousByProject);
+      if (pa !== pb) return pa - pb;
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+
+    const queuedTaskByProject = new Set(
+      sorted
+        .filter((j) => j.kind === "task" && continuousByProject.has(j.project_slug))
+        .map((j) => j.project_slug)
+    );
+
     let job = null;
-    for (const candidate of jobs) {
+    for (const candidate of sorted) {
+      if (provisionOnly && candidate.kind !== "provision") {
+        continue;
+      }
+      if (candidate.kind === "provision") {
+        /* Provision corre sem Play — infra Git do projecto */
+      } else if (!activeProjectSet.has(candidate.project_slug)) {
+        continue;
+      }
+      if (
+        queuedTaskByProject.has(candidate.project_slug) &&
+        candidate.kind !== "task"
+      ) {
+        continue;
+      }
+      if (
+        candidate.kind === "scope-tasks-only" &&
+        queuedTaskByProject.has(candidate.project_slug)
+      ) {
+        continue;
+      }
       const payload =
         typeof candidate.payload === "string"
           ? JSON.parse(candidate.payload)
@@ -206,7 +317,12 @@ export async function claimJob(tenantId, workerId) {
         payload
       );
       if (lock) {
-        const free = await isLockFree(tenantId, lock.lockKind, lock.lockKey);
+        const free = await isLockFree(
+          tenantId,
+          lock.lockKind,
+          lock.lockKey,
+          client
+        );
         if (!free) continue;
       }
       job = candidate;
@@ -215,7 +331,7 @@ export async function claimJob(tenantId, workerId) {
 
     if (!job) {
       await client.query("COMMIT");
-      return null;
+      return { job: null, workerSlot };
     }
 
     const payload =
@@ -260,7 +376,7 @@ export async function claimJob(tenantId, workerId) {
       [tenantId, workerId, workerSlot]
     );
     await client.query("COMMIT");
-    return job;
+    return { job, workerSlot };
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;
@@ -321,13 +437,22 @@ export async function completeJob(tenantId, jobId, payload) {
   try {
     await client.query("BEGIN");
     const { rows: jobMeta } = await client.query(
-      `SELECT j.project_slug, u.email AS executor_email
+      `SELECT j.project_slug, u.email AS executor_email,
+              wl.worker_slot,
+              tw.cursor_bot_email AS bot_email
        FROM jobs j
        LEFT JOIN users u ON u.id = j.requested_by_user_id
+       LEFT JOIN work_locks wl ON wl.job_id = j.id AND wl.tenant_id = j.tenant_id
+       LEFT JOIN tenant_workers tw
+         ON tw.tenant_id = j.tenant_id AND tw.worker_slot = wl.worker_slot
        WHERE j.id = $1`,
       [jobId]
     );
     const executorEmail = jobMeta[0]?.executor_email ?? null;
+    const botEmail = jobMeta[0]?.bot_email
+      ? String(jobMeta[0].bot_email).trim()
+      : null;
+    const workerSlot = jobMeta[0]?.worker_slot ?? null;
     projectSlug = jobMeta[0]?.project_slug ?? null;
 
     await client.query(
@@ -337,10 +462,21 @@ export async function completeJob(tenantId, jobId, payload) {
     );
     await client.query(
       `INSERT INTO usage_events (
-         tenant_id, execution_id, job_id, cost_base_usd, charge_usd, status, executor_email
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         tenant_id, execution_id, job_id, cost_base_usd, charge_usd, status,
+         executor_email, bot_email, worker_slot
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (execution_id) DO NOTHING`,
-      [tenantId, executionId, jobId, cb, cc, billingStatus, executorEmail]
+      [
+        tenantId,
+        executionId,
+        jobId,
+        cb,
+        cc,
+        billingStatus,
+        executorEmail,
+        botEmail,
+        workerSlot,
+      ]
     );
     await client.query(
       `UPDATE tenants SET balance_usd = balance_usd - $2,
@@ -362,12 +498,28 @@ export async function completeJob(tenantId, jobId, payload) {
 
   await releaseWorkLocksForJob(jobId);
 
+  try {
+    const { reconcileTenantSlotsInUse } = await import(
+      "./execution-dispatcher-service.js"
+    );
+    await reconcileTenantSlotsInUse(tenantId);
+  } catch {
+    /* ignore */
+  }
+
   if (projectSlug) {
     try {
       const { dispatchQueuedWork } = await import(
         "./execution-dispatcher-service.js"
       );
-      await dispatchQueuedWork(tenantId, projectSlug);
+      const dispatched = await dispatchQueuedWork(tenantId, projectSlug);
+      if (dispatched.enqueued?.length) {
+        const { broadcastWorkersAndJobs } = await import("../lib/ws-hub.js");
+        broadcastWorkersAndJobs(tenantId, projectSlug, dispatched.enqueued);
+      } else {
+        const { broadcast } = await import("../lib/ws-hub.js");
+        broadcast(tenantId, { type: "billing" });
+      }
     } catch (e) {
       const { log } = await import("../lib/logger.js");
       log.warn("Dispatch após job", { error: e.message });
@@ -497,6 +649,55 @@ export async function getLatestJobForProject(tenantId, projectSlug) {
      ORDER BY created_at DESC
      LIMIT 1`,
     [tenantId, projectSlug]
+  );
+  return rows[0] || null;
+}
+
+const JOB_SLOT_SELECT = `
+  SELECT j.id, j.project_slug, j.kind, j.status, j.task_id, j.started_at,
+         j.finished_at, j.macro_id, j.exit_code, j.worker_id, j.created_at,
+         COALESCE(
+           wl.worker_slot,
+           CASE WHEN j.worker_id ~ 'slot-[0-9]+$'
+             THEN (regexp_match(j.worker_id, 'slot-([0-9]+)$'))[1]::int
+             ELSE NULL END
+         ) AS worker_slot
+  FROM jobs j
+  LEFT JOIN work_locks wl ON wl.job_id = j.id AND wl.tenant_id = j.tenant_id`;
+
+const JOB_SLOT_WHERE = `
+  j.tenant_id = $1 AND j.project_slug = $2
+  AND (
+    wl.worker_slot = $3
+    OR j.worker_id ~ ('slot-' || $3::text || '$')
+  )`;
+
+/**
+ * Job activo ou mais recente de um bot (slot) no projecto.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {number} workerSlot
+ */
+export async function getJobForWorkerSlot(tenantId, projectSlug, workerSlot) {
+  const slot = Number(workerSlot);
+  if (!Number.isInteger(slot) || slot < 1) return null;
+
+  const { rows: active } = await query(
+    `${JOB_SLOT_SELECT}
+     WHERE ${JOB_SLOT_WHERE}
+       AND j.status IN ('running', 'waiting_input', 'queued')
+     ORDER BY j.started_at DESC NULLS LAST, j.created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug, slot]
+  );
+  if (active[0]) return active[0];
+
+  const { rows } = await query(
+    `${JOB_SLOT_SELECT}
+     WHERE ${JOB_SLOT_WHERE}
+     ORDER BY j.created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug, slot]
   );
   return rows[0] || null;
 }

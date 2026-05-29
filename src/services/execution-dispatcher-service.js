@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { query } from "../db/pool.js";
 import {
   checkMicroReadyForIntegrationQa,
+  getEligibleTodoTasks,
   getMicroWaveState,
-  readBacklogTasks,
+  getNextMicroForTaskAnalysis,
+  microHasUndeliveredTasks,
 } from "./micro-wave-service.js";
 import { readTasksState } from "./task-state-service.js";
 import { isLockFree } from "./work-lock-service.js";
@@ -30,31 +32,66 @@ async function hasActiveJob(tenantId, projectSlug, kind, taskId = null) {
 }
 
 /**
- * @param {object} task
- * @param {object[]} backlogTasks
- */
-function taskDependenciesMet(task, backlogTasks, stateByTaskId) {
-  const deps = Array.isArray(task.dependencies) ? task.dependencies : [];
-  if (deps.length === 0) return true;
-  return deps.every((depId) => {
-    const rt = stateByTaskId?.get(depId);
-    if (rt?.status === "done") return true;
-    const dep = backlogTasks.find((t) => t.id === depId);
-    return dep?.status === "done";
-  });
-}
 
-/**
  * Jobs `task` que consomem workers (agentes em paralelo).
  */
-async function countActiveTaskJobs(tenantId, projectSlug) {
+/** Tasks realmente em execução (não conta queued). */
+async function countRunningTaskJobs(tenantId, projectSlug) {
   const { rows } = await query(
     `SELECT COUNT(*)::int AS n FROM jobs
      WHERE tenant_id = $1 AND project_slug = $2 AND kind = 'task'
-       AND status IN ('queued', 'running', 'waiting_input')`,
+       AND status IN ('running', 'waiting_input')`,
     [tenantId, projectSlug]
   );
   return rows[0]?.n ?? 0;
+}
+
+/** Tasks já enfileiradas à espera de claim (ocupam vagas do pool). */
+async function countQueuedTaskJobs(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS n FROM jobs
+     WHERE tenant_id = $1 AND project_slug = $2 AND kind = 'task'
+       AND status = 'queued'`,
+    [tenantId, projectSlug]
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
+ * Vagas livres para novas tasks = bots em Play − (a correr + já na fila).
+ * @param {number} playSlotsCount
+ * @param {number} runningTasks
+ * @param {number} queuedTasks
+ */
+function taskDispatchBudget(playSlotsCount, runningTasks, queuedTasks) {
+  return Math.max(0, playSlotsCount - runningTasks - queuedTasks);
+}
+
+export async function reconcileTenantSlotsInUse(tenantId) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS n FROM jobs
+     WHERE tenant_id = $1 AND status IN ('running', 'waiting_input')`,
+    [tenantId]
+  );
+  await query(
+    `UPDATE tenants SET agent_slots_in_use = $2,
+       has_active_job = ($2 > 0),
+       updated_at = now()
+     WHERE id = $1`,
+    [tenantId, rows[0]?.n ?? 0]
+  );
+}
+
+/** scope | scope-tasks-only | provision — no máximo um fluxo serial por projecto. */
+async function hasActiveSerialJob(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT 1 FROM jobs WHERE tenant_id = $1 AND project_slug = $2
+       AND kind IN ('scope', 'scope-tasks-only', 'provision')
+       AND status IN ('queued', 'running', 'waiting_input')
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -70,6 +107,25 @@ async function hasActiveMicroJob(tenantId, projectSlug, kind, microId) {
      LIMIT 1`,
     [tenantId, projectSlug, kind, microId]
   );
+  return rows.length > 0;
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} [microId]
+ */
+async function hasActiveScopeTasksOnlyJob(tenantId, projectSlug, microId = null) {
+  const params = [tenantId, projectSlug];
+  let sql = `SELECT 1 FROM jobs WHERE tenant_id = $1 AND project_slug = $2
+     AND kind = 'scope-tasks-only'
+     AND status IN ('queued', 'running', 'waiting_input')`;
+  if (microId) {
+    sql += ` AND payload->>'microId' = $3`;
+    params.push(microId);
+  }
+  sql += " LIMIT 1";
+  const { rows } = await query(sql, params);
   return rows.length > 0;
 }
 
@@ -136,15 +192,129 @@ export async function startContinuousExecution(tenantId, projectSlug, opts) {
  */
 export async function pauseContinuousExecution(tenantId, projectSlug) {
   await query(
-    `INSERT INTO tenant_execution (tenant_id, project_slug, continuous_active, pause_after_current, updated_at)
-     VALUES ($1, $2, false, true, now())
+    `INSERT INTO tenant_execution (tenant_id, project_slug, continuous_active, pause_after_current,
+       selected_worker_slots, updated_at)
+     VALUES ($1, $2, false, true, '[]'::jsonb, now())
      ON CONFLICT (tenant_id, project_slug) DO UPDATE SET
        continuous_active = false,
        pause_after_current = true,
+       selected_worker_slots = '[]'::jsonb,
        updated_at = now()`,
     [tenantId, projectSlug]
   );
-  return { pauseAfterCurrent: true };
+  return { pauseAfterCurrent: true, continuousActive: false, workerSlots: [] };
+}
+
+/**
+ * Liga um worker (slot) ao pool do projecto — Play no card do bot.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {number} workerSlot
+ * @param {{ macroId?: string, executorUserId?: string }} opts
+ */
+export async function startWorkerSlot(tenantId, projectSlug, workerSlot, opts = {}) {
+  const slot = Number(workerSlot);
+  if (!Number.isInteger(slot) || slot < 1) {
+    throw Object.assign(new Error("worker_slot inválido"), { status: 400 });
+  }
+  const { assertBotsReadyForSlots } = await import("./worker-bot-service.js");
+  await assertBotsReadyForSlots(tenantId, [slot]);
+
+  const exec = await getExecutionState(tenantId, projectSlug);
+  if (!exec.continuous_active) {
+    return startContinuousExecution(tenantId, projectSlug, {
+      macroId: opts.macroId || projectSlug,
+      workerSlots: [slot],
+      executorUserId: opts.executorUserId || null,
+    });
+  }
+
+  return addWorkersToExecution(
+    tenantId,
+    projectSlug,
+    [slot],
+    opts.executorUserId || null
+  );
+}
+
+/**
+ * Desliga um worker do pool — Pause no card (job em curso termina; não enfileira mais).
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {number} workerSlot
+ */
+/**
+ * Liga todos os bots configurados (botReady) ao pool do projecto.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {{ macroId?: string, executorUserId?: string }} opts
+ */
+export async function startAllReadyWorkers(tenantId, projectSlug, opts = {}) {
+  const { listWorkersStatus } = await import("./worker-bot-service.js");
+  const status = await listWorkersStatus(tenantId);
+  const readySlots = status.workers
+    .filter((w) => w.botReady)
+    .map((w) => w.slot);
+  if (readySlots.length === 0) {
+    throw Object.assign(
+      new Error("Nenhum bot configurado. Contacte o administrador da plataforma."),
+      { status: 403, code: "bot_not_configured" }
+    );
+  }
+
+  const exec = await getExecutionState(tenantId, projectSlug);
+  if (!exec.continuous_active) {
+    return startContinuousExecution(tenantId, projectSlug, {
+      macroId: opts.macroId || projectSlug,
+      workerSlots: readySlots,
+      executorUserId: opts.executorUserId || null,
+    });
+  }
+  return addWorkersToExecution(
+    tenantId,
+    projectSlug,
+    readySlots,
+    opts.executorUserId || null
+  );
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {number} workerSlot
+ */
+export async function stopWorkerSlot(tenantId, projectSlug, workerSlot) {
+  const slot = Number(workerSlot);
+  if (!Number.isInteger(slot) || slot < 1) {
+    throw Object.assign(new Error("worker_slot inválido"), { status: 400 });
+  }
+
+  const exec = await getExecutionState(tenantId, projectSlug);
+  const current = Array.isArray(exec.selected_worker_slots)
+    ? exec.selected_worker_slots
+    : JSON.parse(exec.selected_worker_slots || "[]");
+  const next = current.filter((n) => n !== slot);
+
+  if (next.length === 0) {
+    return pauseContinuousExecution(tenantId, projectSlug);
+  }
+
+  await query(
+    `UPDATE tenant_execution
+     SET selected_worker_slots = $3::jsonb, updated_at = now()
+     WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug, JSON.stringify(next)]
+  );
+
+  log.info("Worker removido do pool", { project: projectSlug, slot, remaining: next });
+
+  return {
+    continuousActive: true,
+    pauseAfterCurrent: false,
+    workerSlots: next,
+    enqueued: [],
+    hint: null,
+  };
 }
 
 /**
@@ -213,16 +383,7 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
     [tenantId, projectSlug]
   );
 
-  // Reconciliar slots_in_use com jobs realmente activos
-  const { rows: activeCount } = await query(
-    `SELECT COUNT(*)::int AS n FROM jobs
-     WHERE tenant_id = $1 AND status IN ('running', 'queued')`,
-    [tenantId]
-  );
-  await query(
-    `UPDATE tenants SET agent_slots_in_use = $2 WHERE id = $1`,
-    [tenantId, activeCount[0]?.n ?? 0]
-  );
+  await reconcileTenantSlotsInUse(tenantId);
 
   const exec = await getExecutionState(tenantId, projectSlug);
   if (!exec.continuous_active || exec.pause_after_current) {
@@ -243,31 +404,13 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
 
   const gitRow = await getProjectGitRow(tenantId, projectSlug);
   if (gitRow && gitRow.git_status !== "ready") {
-    if (!(await hasActiveJob(tenantId, projectSlug, "provision"))) {
-      const id = randomUUID();
-      await query(
-        `INSERT INTO jobs (id, tenant_id, project_slug, kind, status, payload, requested_by_user_id)
-         VALUES ($1, $2, $3, 'provision', 'queued', $4::jsonb, $5)`,
-        [
-          id,
-          tenantId,
-          projectSlug,
-          JSON.stringify({
-            name: gitRow.name || projectSlug,
-            slug: projectSlug,
-            scope: gitRow.scope_md || "",
-            git: {
-              repoMode: gitRow.github_repo_mode || "existing",
-              repoFullName: gitRow.github_repo_full_name,
-              defaultBranch: gitRow.github_default_branch || "main",
-              techLeadBranch: gitRow.github_tech_lead_branch || "tech-lead",
-            },
-          }),
-          executorUserId,
-        ]
-      );
-      log.info("Provision automático enfileirado (git não pronto)", { project: projectSlug, jobId: id });
-      return { enqueued: [{ jobId: id, kind: "provision" }], hint: null };
+    const { ensureGitProvisionJob } = await import("./git-provision-service.js");
+    const prov = await ensureGitProvisionJob(tenantId, projectSlug);
+    if (prov?.jobId) {
+      return {
+        enqueued: [{ jobId: prov.jobId, kind: "provision" }],
+        hint: null,
+      };
     }
     return { enqueued: [], hint: "Aguardando provisionamento Git do projecto." };
   }
@@ -275,8 +418,12 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
   const wave = await getMicroWaveState(tenantId, projectSlug);
   const enqueued = [];
   const macroId = exec.macro_id || projectSlug;
+  const serialBusy = await hasActiveSerialJob(tenantId, projectSlug);
 
-  if (await isLockFree(tenantId, "scope", `${projectSlug}:${macroId}`)) {
+  if (
+    !serialBusy &&
+    (await isLockFree(tenantId, "scope", `${projectSlug}:${macroId}`))
+  ) {
     const micros = wave.micros || [];
     if (micros.length === 0) {
       const id = randomUUID();
@@ -286,7 +433,7 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
         [id, tenantId, projectSlug, macroId, executorUserId]
       );
       enqueued.push({ jobId: id, kind: "scope" });
-      log.info("Job enfileirado (escopo)", { project: projectSlug, jobId: id });
+      log.info("Job enfileirado (escopo macro)", { project: projectSlug, jobId: id });
       return { enqueued, hint: null };
     }
   }
@@ -294,61 +441,47 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
   const openId = wave.openMicroId;
   if (openId) {
     const lockKey = `${projectSlug}:${openId}`;
-    if (await isLockFree(tenantId, "micro_tasks", lockKey)) {
-      const taskCount = wave.taskCountByMicro?.[openId] ?? 0;
-      if (taskCount === 0) {
-        const id = randomUUID();
-        await query(
-          `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, status, payload, requested_by_user_id)
-           VALUES ($1, $2, $3, 'scope-tasks-only', $4, 'queued', $5::jsonb, $6)`,
-          [
-            id,
-            tenantId,
-            projectSlug,
-            macroId,
-            JSON.stringify({ microId: openId }),
-            executorUserId,
-          ]
-        );
-        enqueued.push({ jobId: id, kind: "scope-tasks-only" });
-        log.info("Job enfileirado (onda tasks)", {
-          project: projectSlug,
-          microId: openId,
-          jobId: id,
-        });
-        return { enqueued, hint: null };
-      }
+    const taskCount = wave.taskCountByMicro?.[openId] ?? 0;
+
+    if (
+      !serialBusy &&
+      taskCount === 0 &&
+      !microHasUndeliveredTasks(tenantId, projectSlug, openId) &&
+      !(await hasActiveScopeTasksOnlyJob(tenantId, projectSlug, openId)) &&
+      (await isLockFree(tenantId, "micro_tasks", lockKey))
+    ) {
+      const id = randomUUID();
+      await query(
+        `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, status, payload, requested_by_user_id)
+         VALUES ($1, $2, $3, 'scope-tasks-only', $4, 'queued', $5::jsonb, $6)`,
+        [
+          id,
+          tenantId,
+          projectSlug,
+          macroId,
+          JSON.stringify({ microId: openId }),
+          executorUserId,
+        ]
+      );
+      enqueued.push({ jobId: id, kind: "scope-tasks-only", microId: openId });
+      log.info("Job enfileirado (tasks micro aberto)", {
+        project: projectSlug,
+        microId: openId,
+        jobId: id,
+      });
+      return { enqueued, hint: null };
     }
 
-    const backlog = readBacklogTasks(tenantId, projectSlug);
-    const tasksState = readTasksState(tenantId, projectSlug);
-    const stateByTaskId = new Map(tasksState.map((t) => [t.id, t]));
-    const microTasks = backlog.filter((t) => t.sourceMicroId === openId);
-
-    /** Tasks pausadas (retomáveis com resumeFromStep). */
-    const pausedTasks = microTasks.filter((t) => {
-      const st = stateByTaskId.get(t.id);
-      return st?.status === "paused" && st.lastCompletedStep;
-    });
-
-    const TERMINAL_STATUSES = new Set(["done", "blocked", "running", "review", "testing", "development", "planning"]);
-
-    /** A fazer: todo + aprovada + dependências satisfeitas + não concluída/em curso no runtime. */
-    const todoTasks = microTasks
-      .filter((t) => {
-        if (t.status !== "todo" || t.approved !== true) return false;
-        if (!taskDependenciesMet(t, backlog, stateByTaskId)) return false;
-        const rt = stateByTaskId.get(t.id);
-        if (rt && TERMINAL_STATUSES.has(rt.status)) return false;
-        return true;
-      })
-      .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
-
-    const eligible = [...pausedTasks, ...todoTasks];
+    const { eligible, stateByTaskId, microTasks } = getEligibleTodoTasks(
+      tenantId,
+      projectSlug,
+      openId
+    );
 
     if (eligible.length > 0) {
-      const activeTasks = await countActiveTaskJobs(tenantId, projectSlug);
-      let budget = Math.max(0, slots.length - activeTasks);
+      const runningTasks = await countRunningTaskJobs(tenantId, projectSlug);
+      const queuedTasks = await countQueuedTaskJobs(tenantId, projectSlug);
+      let budget = taskDispatchBudget(slots.length, runningTasks, queuedTasks);
 
       for (const task of eligible) {
         if (budget <= 0) break;
@@ -385,10 +518,14 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
         return { enqueued, hint: null };
       }
 
+      const hintBusy =
+        runningTasks + queuedTasks >= slots.length
+          ? `${runningTasks} a correr · ${queuedTasks} na fila · ${slots.length} bot(s) em Play — aguarde ou use ▶ Todos nos bots livres.`
+          : "Tasks no A fazer, mas locks ou jobs duplicados impedem enfileirar.";
+
       return {
         enqueued: [],
-        hint:
-          "Tasks no A fazer, mas todos os workers estão ocupados. Aguarde conclusão ou adicione slots.",
+        hint: hintBusy,
       };
     }
 
@@ -437,6 +574,41 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
         enqueued: [],
         hint: `Micro ${openId}: aguardando merge Tech Lead de todas as PRs em tech-lead.`,
       };
+    }
+
+    const nextMicroId = await getNextMicroForTaskAnalysis(tenantId, projectSlug);
+    if (
+      nextMicroId &&
+      !serialBusy &&
+      !(await hasActiveScopeTasksOnlyJob(tenantId, projectSlug, nextMicroId))
+    ) {
+      const nextLock = `${projectSlug}:${nextMicroId}`;
+      if (await isLockFree(tenantId, "micro_tasks", nextLock)) {
+        const id = randomUUID();
+        await query(
+          `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, status, payload, requested_by_user_id)
+           VALUES ($1, $2, $3, 'scope-tasks-only', $4, 'queued', $5::jsonb, $6)`,
+          [
+            id,
+            tenantId,
+            projectSlug,
+            macroId,
+            JSON.stringify({ microId: nextMicroId }),
+            executorUserId,
+          ]
+        );
+        enqueued.push({
+          jobId: id,
+          kind: "scope-tasks-only",
+          microId: nextMicroId,
+        });
+        log.info("Job enfileirado (análise próximo micro)", {
+          project: projectSlug,
+          microId: nextMicroId,
+          jobId: id,
+        });
+        return { enqueued, hint: null };
+      }
     }
 
     return {

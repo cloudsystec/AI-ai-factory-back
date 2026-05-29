@@ -30,8 +30,11 @@ export function resolveLockForJob(kind, projectSlug, taskId, macroId, payload) {
  * @param {string} lockKind
  * @param {string} lockKey
  */
-export async function isLockFree(tenantId, lockKind, lockKey) {
-  const { rows } = await query(
+export async function isLockFree(tenantId, lockKind, lockKey, client = null) {
+  const run = client
+    ? (sql, params) => client.query(sql, params)
+    : (sql, params) => query(sql, params);
+  const { rows } = await run(
     `SELECT 1 FROM work_locks WHERE tenant_id = $1 AND lock_kind = $2 AND lock_key = $3`,
     [tenantId, lockKind, lockKey]
   );

@@ -3,6 +3,7 @@ import { query } from "../db/pool.js";
 import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
 import { listActiveJobsForTenant } from "../services/job-service.js";
 import { getTenantUserQuota } from "../services/user-service.js";
+import { listWorkersStatus } from "../services/worker-bot-service.js";
 
 export const billingRouter = Router();
 billingRouter.use(requireAuth, attachCapabilities, requireActivePlan);
@@ -25,6 +26,7 @@ billingRouter.get("/summary", async (req, res) => {
   );
 
   const quota = await getTenantUserQuota(req.user.tenantId);
+  const workersStatus = await listWorkersStatus(req.user.tenantId);
   const activeRows = await listActiveJobsForTenant(req.user.tenantId);
   const activeJobs = activeRows.map((row) => ({
     id: row.id,
@@ -51,5 +53,7 @@ billingRouter.get("/summary", async (req, res) => {
     workerStatus: t.worker_status,
     recentUsage: events,
     activeJobs,
+    workersStatus: workersStatus.workers,
+    slotsMax: workersStatus.slotsMax,
   });
 });

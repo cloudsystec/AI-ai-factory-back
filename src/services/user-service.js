@@ -326,7 +326,7 @@ export async function setTenantUsersMax(tenantId, usersMax) {
  */
 export async function assertExecutorCanRunJobs(executorUserId) {
   const { rows } = await query(
-    `SELECT id, role, cursor_api_key_encrypted, email FROM users WHERE id = $1`,
+    `SELECT id, role, email FROM users WHERE id = $1`,
     [executorUserId]
   );
   const u = rows[0];
@@ -334,14 +334,6 @@ export async function assertExecutorCanRunJobs(executorUserId) {
     throw Object.assign(new Error("Apenas executores podem iniciar jobs"), {
       status: 403,
     });
-  }
-  if (!u.cursor_api_key_encrypted) {
-    throw Object.assign(
-      new Error(
-        "Execução indisponível. Contacte o administrador da plataforma."
-      ),
-      { status: 403, code: "executor_cursor_key_missing" }
-    );
   }
   return u;
 }

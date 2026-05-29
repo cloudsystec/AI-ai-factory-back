@@ -11,9 +11,13 @@ import {
   pauseContinuousExecution,
   addWorkersToExecution,
   getExecutionState,
+  startWorkerSlot,
+  stopWorkerSlot,
+  startAllReadyWorkers,
 } from "../services/execution-dispatcher-service.js";
 import { assertExecutorCanRunJobs } from "../services/user-service.js";
-import { broadcast } from "../lib/ws-hub.js";
+import { assertBotsReadyForSlots } from "../services/worker-bot-service.js";
+import { broadcast, broadcastWorkersAndJobs } from "../lib/ws-hub.js";
 
 export const executionRouter = Router();
 executionRouter.use(requireAuth, attachCapabilities, requireActivePlan);
@@ -42,6 +46,8 @@ executionRouter.post(
     }
     const { macroId, workerSlots } = req.body ?? {};
     await assertExecutorCanRunJobs(req.user.id);
+    const slots = Array.isArray(workerSlots) ? workerSlots : [];
+    await assertBotsReadyForSlots(req.user.tenantId, slots);
     const result = await startContinuousExecution(
       req.user.tenantId,
       projectSlug,
@@ -56,7 +62,13 @@ executionRouter.post(
       project: projectSlug,
       continuousActive: true,
       pauseAfterCurrent: false,
+      selectedWorkerSlots: slots,
     });
+    broadcastWorkersAndJobs(
+      req.user.tenantId,
+      projectSlug,
+      result.enqueued
+    );
     res.json(result);
   }
 );
@@ -74,6 +86,7 @@ executionRouter.post(
       return res.status(400).json({ error: "Selecione pelo menos um worker." });
     }
     try {
+      await assertBotsReadyForSlots(req.user.tenantId, workerSlots);
       const result = await addWorkersToExecution(
         req.user.tenantId,
         projectSlug,
@@ -85,7 +98,13 @@ executionRouter.post(
         project: projectSlug,
         continuousActive: true,
         pauseAfterCurrent: false,
+        selectedWorkerSlots: workerSlots,
       });
+      broadcastWorkersAndJobs(
+        req.user.tenantId,
+        projectSlug,
+        result.enqueued
+      );
       res.json(result);
     } catch (e) {
       res.status(409).json({ error: e.message });
@@ -110,7 +129,118 @@ executionRouter.post(
       project: projectSlug,
       continuousActive: false,
       pauseAfterCurrent: result.pauseAfterCurrent ?? true,
+      selectedWorkerSlots: result.workerSlots ?? [],
     });
+    broadcast(req.user.tenantId, { type: "billing" });
     res.json(result);
+  }
+);
+
+executionRouter.post(
+  "/:projectSlug/play-all",
+  requireCapability("execute"),
+  async (req, res) => {
+    const projectSlug = String(req.params.projectSlug ?? "").trim();
+    if (!isValidProjectSlug(projectSlug)) {
+      return res.status(400).json({ error: "projectSlug inválido" });
+    }
+    try {
+      await assertExecutorCanRunJobs(req.user.id);
+      const { macroId } = req.body ?? {};
+      const result = await startAllReadyWorkers(
+        req.user.tenantId,
+        projectSlug,
+        { macroId: macroId || projectSlug, executorUserId: req.user.id }
+      );
+      const slots = result.workerSlots ?? [];
+      broadcast(req.user.tenantId, {
+        type: "execution",
+        project: projectSlug,
+        continuousActive: true,
+        pauseAfterCurrent: false,
+        selectedWorkerSlots: slots,
+        action: "play-all",
+      });
+      broadcastWorkersAndJobs(
+        req.user.tenantId,
+        projectSlug,
+        result.enqueued
+      );
+      res.json(result);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, code: e.code });
+    }
+  }
+);
+
+executionRouter.post(
+  "/:projectSlug/workers/:slot/start",
+  requireCapability("execute"),
+  async (req, res) => {
+    const projectSlug = String(req.params.projectSlug ?? "").trim();
+    const workerSlot = Number(req.params.slot);
+    if (!isValidProjectSlug(projectSlug)) {
+      return res.status(400).json({ error: "projectSlug inválido" });
+    }
+    try {
+      await assertExecutorCanRunJobs(req.user.id);
+      const { macroId } = req.body ?? {};
+      const result = await startWorkerSlot(
+        req.user.tenantId,
+        projectSlug,
+        workerSlot,
+        { macroId: macroId || projectSlug, executorUserId: req.user.id }
+      );
+      const slots = result.workerSlots ?? [workerSlot];
+      broadcast(req.user.tenantId, {
+        type: "execution",
+        project: projectSlug,
+        continuousActive: true,
+        pauseAfterCurrent: false,
+        selectedWorkerSlots: slots,
+        workerSlot,
+        action: "start",
+      });
+      broadcastWorkersAndJobs(
+        req.user.tenantId,
+        projectSlug,
+        result.enqueued
+      );
+      res.json(result);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, code: e.code });
+    }
+  }
+);
+
+executionRouter.post(
+  "/:projectSlug/workers/:slot/stop",
+  requireCapability("execute"),
+  async (req, res) => {
+    const projectSlug = String(req.params.projectSlug ?? "").trim();
+    const workerSlot = Number(req.params.slot);
+    if (!isValidProjectSlug(projectSlug)) {
+      return res.status(400).json({ error: "projectSlug inválido" });
+    }
+    try {
+      const result = await stopWorkerSlot(
+        req.user.tenantId,
+        projectSlug,
+        workerSlot
+      );
+      broadcast(req.user.tenantId, {
+        type: "execution",
+        project: projectSlug,
+        continuousActive: result.continuousActive === true,
+        pauseAfterCurrent: result.pauseAfterCurrent === true,
+        selectedWorkerSlots: result.workerSlots ?? [],
+        workerSlot,
+        action: "stop",
+      });
+      broadcast(req.user.tenantId, { type: "billing" });
+      res.json(result);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message, code: e.code });
+    }
   }
 );

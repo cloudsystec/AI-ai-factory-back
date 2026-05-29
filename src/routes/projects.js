@@ -45,6 +45,10 @@ import {
 import { listTaskPullRequests } from "../services/task-pr-service.js";
 
 import { getMicroWaveState } from "../services/micro-wave-service.js";
+import {
+  getProjectMacroScope,
+  updateProjectMacroScope,
+} from "../services/macro-scope-service.js";
 
 import { approveTaskHumanValidation } from "../services/task-state-service.js";
 
@@ -398,8 +402,13 @@ projectsRouter.post("/:slug/connect-git", requireCapability("write"), async (req
       git: { repoFullName, defaultBranch, techLeadBranch, repoMode },
     });
 
+    const { ensureGitProvisionJob } = await import(
+      "../services/git-provision-service.js"
+    );
+    await ensureGitProvisionJob(req.user.tenantId, slug).catch(() => {});
+
     res.json({
-      gitStatus: "pending",
+      gitStatus: "provisioning",
       repoFullName,
       defaultBranch,
       techLeadBranch,
@@ -571,6 +580,37 @@ projectsRouter.delete("/:slug", requireCapability("write"), async (req, res) => 
 
 
 
+projectsRouter.get("/:slug/macro-scope", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    res.json(await getProjectMacroScope(req.user.tenantId, slug));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+projectsRouter.patch("/:slug/macro-scope", requireCapability("write"), async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  const scopeMd = req.body?.scopeMd ?? req.body?.scope;
+  if (scopeMd === undefined) {
+    return res.status(400).json({ error: "scopeMd é obrigatório" });
+  }
+  try {
+    res.json(await updateProjectMacroScope(req.user.tenantId, slug, scopeMd));
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message,
+      code: error.code,
+    });
+  }
+});
+
 projectsRouter.get("/:slug", async (req, res) => {
 
   const slug = String(req.params.slug ?? "").trim();
@@ -621,13 +661,31 @@ projectsRouter.patch("/:slug", requireCapability("write"), async (req, res) => {
 
   }
 
-  const { name, defaultBranch } = req.body ?? {};
+  const { name, defaultBranch, scopeMd, scope } = req.body ?? {};
 
   const row = await getProjectGitRow(req.user.tenantId, slug);
 
   if (!row) return res.status(404).json({ error: "Projeto não encontrado" });
 
-
+  if (scopeMd !== undefined || scope !== undefined) {
+    try {
+      const updated = await updateProjectMacroScope(
+        req.user.tenantId,
+        slug,
+        scopeMd ?? scope
+      );
+      return res.json({
+        slug: updated.slug,
+        name: updated.name,
+        scopeMd: updated.scopeMd,
+      });
+    } catch (error) {
+      return res.status(error.status || 500).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+  }
 
   const installationId = await assertTenantGitHubConnected(req.user.tenantId);
 

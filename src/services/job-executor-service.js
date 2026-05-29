@@ -1,7 +1,10 @@
 import { query } from "../db/pool.js";
-import { getExecutorCursorApiKeyDecrypted } from "./user-service.js";
+import {
+  getBotWorkerApiKeyDecrypted,
+  isBotReady,
+} from "./worker-bot-service.js";
 
-/** Jobs que invocam o Cursor CLI (`agent`) — exigem chave de chamada do executor. */
+/** Jobs que invocam o Cursor CLI (`agent`) — exigem chave do bot (worker slot). */
 export const CURSOR_AGENT_JOB_KINDS = new Set([
   "scope",
   "scope-tasks-only",
@@ -26,15 +29,17 @@ export async function resolveJobExecutorUserId(tenantId, job) {
 }
 
 /**
- * Chave Cursor de chamada (por utilizador). Admin API key é separada (tenant).
+ * Chave Cursor de execução do bot (por slot). Admin API key é separada (tenant).
  * @param {string} tenantId
- * @param {{ kind: string, requested_by_user_id?: string|null, project_slug?: string }} job
+ * @param {{ kind: string }} job
+ * @param {number} workerSlot
  */
-export async function resolveCursorApiKeyForJob(tenantId, job) {
+export async function resolveCursorApiKeyForJob(tenantId, job, workerSlot) {
   if (job.kind === "provision" || !CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
     return null;
   }
-  const userId = await resolveJobExecutorUserId(tenantId, job);
-  if (!userId) return null;
-  return getExecutorCursorApiKeyDecrypted(userId);
+  if (!(await isBotReady(tenantId, workerSlot))) {
+    return null;
+  }
+  return getBotWorkerApiKeyDecrypted(tenantId, workerSlot);
 }

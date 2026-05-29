@@ -16,7 +16,10 @@ import {
   companyNameFromCheckoutSession,
   companyNameFromInvoice,
 } from "../lib/stripe-webhook-helpers.js";
-import { upsertTenant } from "../services/tenant-service.js";
+import {
+  setTenantCursorAdminKey,
+  upsertTenant,
+} from "../services/tenant-service.js";
 
 const log = createLogger("stripe");
 
@@ -90,6 +93,20 @@ function emailFromInvoice(invoice) {
   );
 }
 
+/**
+ * @param {string} tenantId
+ */
+async function applyPlatformCursorAdminKeyIfNeeded(tenantId) {
+  const platformKey = String(process.env.PLATFORM_CURSOR_ADMIN_API_KEY || "").trim();
+  if (!platformKey) return;
+  const { rows } = await query(
+    "SELECT cursor_admin_api_key_encrypted FROM tenants WHERE id = $1",
+    [tenantId]
+  );
+  if (rows[0]?.cursor_admin_api_key_encrypted) return;
+  await setTenantCursorAdminKey(tenantId, platformKey);
+}
+
 function resolveTempPassword() {
   const fromEnv = process.env.STRIPE_DEFAULT_USER_PASSWORD;
   if (fromEnv) return String(fromEnv);
@@ -144,6 +161,7 @@ async function provisionFromCheckoutSession(session) {
     planId,
   });
   await ensureAuditorUser(tenant.id, tenant.email);
+  await applyPlatformCursorAdminKeyIfNeeded(tenant.id);
   log.info("Tenant provisionado via Stripe", {
     tenantId: tenant.id,
     email: tenant.email,
@@ -211,6 +229,7 @@ async function provisionFromInvoicePaid(invoice) {
     planId,
   });
   await ensureAuditorUser(tenant.id, tenant.email, { updatePasswordIfMissing: false });
+  await applyPlatformCursorAdminKeyIfNeeded(tenant.id);
   log.info("Tenant atualizado via invoice.paid", {
     tenantId: tenant.id,
     email: tenant.email,
