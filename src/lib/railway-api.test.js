@@ -4,11 +4,10 @@ import {
   DEFAULT_RAILWAY_CLI_BRANCH,
   DEFAULT_RAILWAY_CLI_REGION,
   DEFAULT_RAILWAY_CLI_REPO,
-  buildInstanceInputFromEnv,
-  buildInstanceInputFromTemplate,
   railwayCliBranch,
   railwayCliRegion,
   railwayCliRepo,
+  toStagedVariableMap,
 } from "./railway-api.js";
 
 describe("railway-api CLI defaults", () => {
@@ -25,12 +24,6 @@ describe("railway-api CLI defaults", () => {
       assert.equal(railwayCliRepo(), DEFAULT_RAILWAY_CLI_REPO);
       assert.equal(railwayCliBranch(), DEFAULT_RAILWAY_CLI_BRANCH);
       assert.equal(railwayCliRegion(), DEFAULT_RAILWAY_CLI_REGION);
-      const input = buildInstanceInputFromEnv();
-      assert.deepEqual(input.source, {
-        repo: DEFAULT_RAILWAY_CLI_REPO,
-        branch: DEFAULT_RAILWAY_CLI_BRANCH,
-      });
-      assert.equal(input.region, DEFAULT_RAILWAY_CLI_REGION);
     } finally {
       if (prev.RAILWAY_CLI_REPO === undefined) delete process.env.RAILWAY_CLI_REPO;
       else process.env.RAILWAY_CLI_REPO = prev.RAILWAY_CLI_REPO;
@@ -53,25 +46,11 @@ describe("railway-api CLI defaults", () => {
   });
 });
 
-describe("railway-api buildInstanceInputFromTemplate", () => {
-  it("usa defaults quando template vazio", () => {
-    const input = buildInstanceInputFromTemplate({
-      instance: null,
-      service: null,
+describe("railway-api staged variables", () => {
+  it("toStagedVariableMap formata value objects", () => {
+    assert.deepEqual(toStagedVariableMap({ TENANT_ID: "abc", PORT: "80" }), {
+      TENANT_ID: { value: "abc" },
+      PORT: { value: "80" },
     });
-    assert.equal(input.source.repo, DEFAULT_RAILWAY_CLI_REPO);
-  });
-
-  it("buildInstanceInputFromEnv com Dockerfile", () => {
-    const prev = process.env.RAILWAY_CLI_DOCKERFILE_PATH;
-    process.env.RAILWAY_CLI_DOCKERFILE_PATH = "Dockerfile";
-    try {
-      const input = buildInstanceInputFromEnv();
-      assert.equal(input.dockerfilePath, "Dockerfile");
-      assert.equal(input.builder, "DOCKERFILE");
-    } finally {
-      if (prev === undefined) delete process.env.RAILWAY_CLI_DOCKERFILE_PATH;
-      else process.env.RAILWAY_CLI_DOCKERFILE_PATH = prev;
-    }
   });
 });

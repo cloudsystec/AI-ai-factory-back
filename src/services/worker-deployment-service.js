@@ -2,13 +2,12 @@ import { query } from "../db/pool.js";
 import { createLogger } from "../lib/logger.js";
 import {
   assertRailwayConfig,
+  applyWorkerServiceConfig,
   createEmptyService,
   createVolume,
   deployServiceInstance,
   railwayCliRegion,
-  resolveServiceInstanceInput,
-  updateServiceInstance,
-  upsertServiceVariables,
+  railwayStep,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
 
@@ -122,14 +121,17 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
 
   try {
     let serviceId = row.railway_service_id || null;
+    const isNewService = !serviceId;
 
     if (!serviceId) {
       const prefix = tenantId.slice(0, 8);
-      const created = await createEmptyService({
-        projectId: cfg.projectId,
-        environmentId: cfg.environmentId,
-        name: `cli-${prefix}`,
-      });
+      const created = await railwayStep("serviceCreate", () =>
+        createEmptyService({
+          projectId: cfg.projectId,
+          environmentId: cfg.environmentId,
+          name: `cli-${prefix}`,
+        })
+      );
       serviceId = created.id;
       await updateWorkerDeployment(tenantId, {
         railway_service_id: serviceId,
@@ -141,14 +143,6 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       });
     }
 
-    const { input: instanceInput, templateRegion } =
-      await resolveServiceInstanceInput();
-    await updateServiceInstance(
-      cfg.environmentId,
-      serviceId,
-      instanceInput
-    );
-
     const env = await buildTenantWorkerEnv(tenantId);
     if (!env.BACK_URL || !env.WORKER_SECRET || !env.REDIS_URL) {
       throw new Error(
@@ -156,34 +150,37 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       );
     }
 
-    await upsertServiceVariables({
-      projectId: cfg.projectId,
+    await applyWorkerServiceConfig({
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
+      isNewService,
     });
 
     let volumeId = row.railway_volume_id || null;
     const mountPath = `/app/data/tenants/${tenantId}`;
 
     if (!volumeId) {
-      const region =
-        cfg.region || templateRegion || railwayCliRegion();
+      const region = cfg.region || railwayCliRegion();
 
-      const volume = await createVolume({
-        projectId: cfg.projectId,
-        environmentId: cfg.environmentId,
-        serviceId,
-        mountPath,
-        region,
-      });
+      const volume = await railwayStep("volumeCreate", () =>
+        createVolume({
+          projectId: cfg.projectId,
+          environmentId: cfg.environmentId,
+          serviceId,
+          mountPath,
+          region,
+        })
+      );
       volumeId = volume.id;
       await updateWorkerDeployment(tenantId, {
         railway_volume_id: volumeId,
       });
     }
 
-    await deployServiceInstance(cfg.environmentId, serviceId);
+    await railwayStep("serviceInstanceDeployV2", () =>
+      deployServiceInstance(cfg.environmentId, serviceId)
+    );
 
     await updateWorkerDeployment(tenantId, {
       status: "deployed",

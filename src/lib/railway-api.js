@@ -49,9 +49,15 @@ export async function railwayGraphql(query, variables = {}) {
     );
   }
   if (body.errors?.length) {
-    throw new Error(
-      body.errors.map((e) => e.message || String(e)).join("; ")
-    );
+    const detail = body.errors
+      .map((e) => {
+        const parts = [e.message];
+        if (e.extensions?.code) parts.push(`code=${e.extensions.code}`);
+        if (e.path) parts.push(`path=${JSON.stringify(e.path)}`);
+        return parts.filter(Boolean).join(" ");
+      })
+      .join("; ");
+    throw new Error(detail || "Railway GraphQL error");
   }
   return body.data;
 }
@@ -109,43 +115,112 @@ export async function createEmptyService(input) {
 }
 
 /**
- * @param {string} environmentId
- * @param {string} serviceId
- * @param {Record<string, unknown>} input
+ * @param {string} label
+ * @param {() => Promise<T>} fn
+ * @template T
  */
-export async function updateServiceInstance(environmentId, serviceId, input) {
+export async function railwayStep(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`[${label}] ${msg}`);
+  }
+}
+
+/**
+ * Liga serviço existente ao repo GitHub (branch de deploy automático).
+ * @param {string} serviceId
+ * @param {string} repo
+ * @param {string} branch
+ */
+export async function connectServiceRepo(serviceId, repo, branch) {
   await railwayGraphql(
-    `mutation ServiceInstanceUpdate(
-      $environmentId: String!,
-      $serviceId: String!,
-      $input: ServiceInstanceUpdateInput!
-    ) {
-      serviceInstanceUpdate(
-        environmentId: $environmentId,
-        serviceId: $serviceId,
-        input: $input
-      )
+    `mutation ServiceConnect($id: String!, $input: ServiceConnectInput!) {
+      serviceConnect(id: $id, input: $input) { id }
     }`,
-    { environmentId, serviceId, input }
+    { id: serviceId, input: { repo, branch } }
   );
 }
 
 /**
- * @param {{ projectId: string, environmentId: string, serviceId: string, variables: Record<string, string> }} input
+ * @param {Record<string, string>} variables
  */
-export async function upsertServiceVariables(input) {
+export function toStagedVariableMap(variables) {
+  /** @type {Record<string, { value: string }>} */
+  const out = {};
+  for (const [key, value] of Object.entries(variables)) {
+    out[key] = { value: String(value) };
+  }
+  return out;
+}
+
+/**
+ * Configura source, região, builder e variáveis via staged changes (API recomendada).
+ * @param {string} environmentId
+ * @param {string} serviceId
+ * @param {{
+ *   repo: string,
+ *   branch: string,
+ *   region: string,
+ *   variables: Record<string, string>,
+ *   isCreated?: boolean,
+ *   dockerfilePath?: string,
+ * }} config
+ */
+export async function stageWorkerServiceConfig(environmentId, serviceId, config) {
+  /** @type {Record<string, unknown>} */
+  const servicePatch = {
+    isCreated: config.isCreated !== false,
+    source: { repo: config.repo, branch: config.branch },
+    variables: toStagedVariableMap(config.variables),
+    deploy: {
+      multiRegionConfig: {
+        [config.region]: { numReplicas: 1 },
+      },
+    },
+  };
+
+  if (config.dockerfilePath) {
+    servicePatch.build = {
+      builder: "DOCKERFILE",
+      dockerfilePath: config.dockerfilePath,
+    };
+  }
+
   await railwayGraphql(
-    `mutation VariableCollectionUpsert($input: VariableCollectionUpsertInput!) {
-      variableCollectionUpsert(input: $input)
+    `mutation StageWorker($environmentId: String!, $input: EnvironmentConfig!, $merge: Boolean) {
+      environmentStageChanges(
+        environmentId: $environmentId
+        input: $input
+        merge: $merge
+      ) { id }
     }`,
     {
-      input: {
-        projectId: input.projectId,
-        environmentId: input.environmentId,
-        serviceId: input.serviceId,
-        variables: input.variables,
-        replace: false,
-      },
+      environmentId,
+      merge: true,
+      input: { services: { [serviceId]: servicePatch } },
+    }
+  );
+}
+
+/**
+ * @param {string} environmentId
+ * @param {string} [message]
+ */
+export async function commitStagedEnvironment(environmentId, message) {
+  await railwayGraphql(
+    `mutation CommitStaged($environmentId: String!, $message: String, $skipDeploys: Boolean) {
+      environmentPatchCommitStaged(
+        environmentId: $environmentId
+        commitMessage: $message
+        skipDeploys: $skipDeploys
+      )
+    }`,
+    {
+      environmentId,
+      message: message || "AI Factory worker provision",
+      skipDeploys: false,
     }
   );
 }
@@ -188,77 +263,42 @@ export async function deployServiceInstance(environmentId, serviceId) {
 }
 
 /**
- * Configuração do serviço CLI (defaults + ENV opcional).
- * @returns {Record<string, unknown>}
+ * Configura e aplica deploy do worker (repo + env + região).
+ * @param {{
+ *   environmentId: string,
+ *   serviceId: string,
+ *   variables: Record<string, string>,
+ *   isNewService?: boolean,
+ * }} input
  */
-export function buildInstanceInputFromEnv() {
-  /** @type {Record<string, unknown>} */
-  const input = {
-    isCreated: true,
-    region: railwayCliRegion(),
-    source: {
-      repo: railwayCliRepo(),
-      branch: railwayCliBranch(),
-    },
-  };
+export async function applyWorkerServiceConfig(input) {
+  const repo = railwayCliRepo();
+  const branch = railwayCliBranch();
+  const region = railwayCliRegion();
+  const dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH || "Dockerfile";
 
-  if (process.env.RAILWAY_CLI_ROOT_DIRECTORY) {
-    input.rootDirectory = process.env.RAILWAY_CLI_ROOT_DIRECTORY;
-  }
-  if (process.env.RAILWAY_CLI_DOCKERFILE_PATH) {
-    input.dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH;
-    input.builder = "DOCKERFILE";
-  }
+  await railwayStep("serviceConnect", () =>
+    connectServiceRepo(input.serviceId, repo, branch).catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/already|connected|duplicate/i.test(msg)) return;
+      throw e;
+    })
+  );
 
-  return input;
-}
+  await railwayStep("environmentStageChanges", () =>
+    stageWorkerServiceConfig(input.environmentId, input.serviceId, {
+      repo,
+      branch,
+      region,
+      variables: input.variables,
+      isCreated: input.isNewService !== false,
+      dockerfilePath,
+    })
+  );
 
-/**
- * Copia source/build do template para o input de serviceInstanceUpdate.
- * @param {{ instance: Record<string, unknown> | null, service: Record<string, unknown> | null }} template
- */
-export function buildInstanceInputFromTemplate(template) {
-  const fromEnv = buildInstanceInputFromEnv();
-  if (fromEnv) return fromEnv;
-
-  const inst = template.instance || {};
-  /** @type {Record<string, unknown>} */
-  const input = { isCreated: true };
-
-  if (inst.region) input.region = inst.region;
-  if (inst.builder) input.builder = inst.builder;
-  if (inst.dockerfilePath) input.dockerfilePath = inst.dockerfilePath;
-  if (inst.rootDirectory) input.rootDirectory = inst.rootDirectory;
-  if (inst.startCommand) input.startCommand = inst.startCommand;
-
-  const source = /** @type {Record<string, unknown>} */ (inst.source || {});
-  if (source.image) {
-    input.source = { image: source.image };
-  } else if (source.repo) {
-    input.source = {
-      repo: source.repo,
-      branch: process.env.RAILWAY_CLI_BRANCH || "main",
-    };
-  }
-
-  if (!input.source && !input.dockerfilePath) {
-    throw new Error(
-      "Template CLI sem source reconhecível; configure RAILWAY_CLI_REPO ou RAILWAY_CLI_DOCKERFILE_PATH"
-    );
-  }
-
-  return input;
-}
-
-/**
- * Resolve input de deploy: defaults fixos (repo CLI) — sem ler template via GraphQL.
- */
-export async function resolveServiceInstanceInput() {
-  const input = buildInstanceInputFromEnv();
-  return {
-    input,
-    templateRegion: railwayCliRegion(),
-  };
+  await railwayStep("environmentPatchCommitStaged", () =>
+    commitStagedEnvironment(input.environmentId)
+  );
 }
 
 export function railwayConfig() {
