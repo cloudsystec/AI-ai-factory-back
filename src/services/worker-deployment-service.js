@@ -5,10 +5,12 @@ import {
   applyWorkerServiceConfig,
   createVolume,
   createWorkerService,
-  deployServiceInstanceIfReady,
   fetchServiceInstance,
   railwayCliRegion,
   railwayStep,
+  triggerWorkerRedeploy,
+  updateServiceName,
+  waitForServiceInstance,
   workerServiceName,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
@@ -167,10 +169,21 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
         })
       );
       serviceId = created.id;
+      if (created.name !== name) {
+        await railwayStep("serviceUpdate", () =>
+          updateServiceName(serviceId, name)
+        );
+      }
+      await railwayStep("waitForServiceInstance", () =>
+        waitForServiceInstance(serviceId, cfg.environmentId, {
+          attempts: 15,
+          delayMs: 2000,
+        })
+      );
       log.info("Serviço Railway criado a partir do repo CLI", {
         tenantId: tenantId.slice(0, 8),
         serviceId,
-        name: created.name,
+        name,
       });
       await updateWorkerDeployment(tenantId, {
         railway_service_id: serviceId,
@@ -194,7 +207,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
-      includeSource: !createdFromRepo,
+      createdFromRepo,
     });
 
     let volumeId = createdFromRepo ? null : row.railway_volume_id || null;
@@ -218,15 +231,47 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       });
     }
 
-    await railwayStep("serviceInstanceDeployV2", () =>
-      deployServiceInstanceIfReady(cfg.environmentId, serviceId)
+    const redeploy = await railwayStep("serviceInstanceDeployV2", () =>
+      triggerWorkerRedeploy(cfg.environmentId, serviceId)
     );
+    if (redeploy.skipped) {
+      log.warn("Redeploy ignorado (Railway ainda a aplicar changes)", {
+        tenantId: tenantId.slice(0, 8),
+        reason: redeploy.reason,
+      });
+    }
+
+    const { instance } = await fetchServiceInstance(
+      serviceId,
+      cfg.environmentId
+    );
+    if (!instance && !redeploy.skipped) {
+      throw new Error(
+        "Config aplicada mas ServiceInstance ainda não visível — aguarde 'Applying changes' no Railway"
+      );
+    }
 
     await updateWorkerDeployment(tenantId, {
-      status: "deployed",
-      last_error: null,
-      provisioned_at: new Date(),
+      status: instance ? "deployed" : "provisioning",
+      last_error: instance
+        ? null
+        : "Railway a aplicar changes — aguardar ou reprovisionar em 2 min",
+      provisioned_at: instance ? new Date() : null,
     });
+
+    if (!instance) {
+      log.warn("Provisionamento parcial — Railway ainda a aplicar changes", {
+        tenantId: tenantId.slice(0, 8),
+        serviceId,
+      });
+      return {
+        skipped: false,
+        pendingRailway: true,
+        serviceId,
+        volumeId,
+        mountPath,
+      };
+    }
 
     log.info("Worker CLI provisionado no Railway", {
       tenantId: tenantId.slice(0, 8),

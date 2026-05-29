@@ -66,10 +66,10 @@ describe("railway-api service instance", () => {
 });
 
 describe("railway-api worker service name", () => {
-  it("workerServiceName usa prefixo curto do tenant", () => {
+  it("workerServiceName usa tenant UUID completo", () => {
     assert.equal(
       workerServiceName("bb6d9ded-c649-4134-b3c0-90a844a029b1"),
-      "cli-bb6d9ded"
+      "cli-bb6d9ded-c649-4134-b3c0-90a844a029b1"
     );
   });
 });

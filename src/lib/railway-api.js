@@ -23,9 +23,9 @@ export function railwayCliRegion() {
   );
 }
 
-/** Nome curto e estável por tenant (ex.: cli-bb6d9ded). */
+/** Nome único por tenant (evita colisão cli-bb6d9ded → cli-bb6d9ded-uuid…). */
 export function workerServiceName(tenantId) {
-  return `cli-${String(tenantId).slice(0, 8)}`;
+  return `cli-${String(tenantId)}`;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -125,6 +125,20 @@ export async function createWorkerService(input) {
   const svc = data?.serviceCreate;
   if (!svc?.id) throw new Error("serviceCreate não devolveu id");
   return svc;
+}
+
+/**
+ * @param {string} serviceId
+ * @param {string} name
+ */
+export async function updateServiceName(serviceId, name) {
+  const data = await railwayGraphql(
+    `mutation ServiceUpdate($id: String!, $input: ServiceUpdateInput!) {
+      serviceUpdate(id: $id, input: $input) { id name }
+    }`,
+    { id: serviceId, input: { name } }
+  );
+  return data?.serviceUpdate ?? null;
 }
 
 /**
@@ -274,8 +288,8 @@ export async function waitForServiceInstance(
   environmentId,
   opts = {}
 ) {
-  const attempts = opts.attempts ?? 20;
-  const delayMs = opts.delayMs ?? 2000;
+  const attempts = opts.attempts ?? 30;
+  const delayMs = opts.delayMs ?? 3000;
 
   for (let i = 0; i < attempts; i++) {
     const { instance } = await fetchServiceInstance(serviceId, environmentId);
@@ -302,18 +316,31 @@ export async function deployServiceInstance(environmentId, serviceId) {
 }
 
 /**
- * Deploy só se a instância existir (evita INTERNAL_SERVER_ERROR em órfãos).
+ * Redeploy após volume; não falha se Railway ainda está "Applying changes".
+ * O commit staged já dispara deploy inicial.
  * @param {string} environmentId
  * @param {string} serviceId
  */
-export async function deployServiceInstanceIfReady(environmentId, serviceId) {
-  const { instance } = await fetchServiceInstance(serviceId, environmentId);
-  if (!instance) {
-    throw new Error(
-      "ServiceInstance não existe no ambiente — confirme commit staged ou recrie o serviço"
-    );
+export async function triggerWorkerRedeploy(environmentId, serviceId) {
+  try {
+    await waitForServiceInstance(serviceId, environmentId, {
+      attempts: 10,
+      delayMs: 3000,
+    });
+  } catch {
+    return { skipped: true, reason: "instance_not_ready" };
   }
-  return deployServiceInstance(environmentId, serviceId);
+
+  try {
+    const deploymentId = await deployServiceInstance(environmentId, serviceId);
+    return { skipped: false, deploymentId };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/not found|processing|Problem processing/i.test(msg)) {
+      return { skipped: true, reason: msg };
+    }
+    throw e;
+  }
 }
 
 /**
@@ -332,6 +359,7 @@ export function needsServiceInstanceCreate(instance) {
  *   serviceId: string,
  *   variables: Record<string, string>,
  *   includeSource?: boolean,
+ *   createdFromRepo?: boolean,
  * }} input
  */
 export async function applyWorkerServiceConfig(input) {
@@ -343,8 +371,14 @@ export async function applyWorkerServiceConfig(input) {
   const { instance } = await railwayStep("fetchServiceInstance", () =>
     fetchServiceInstance(input.serviceId, input.environmentId)
   );
-  const isCreated = needsServiceInstanceCreate(instance);
-  const includeSource = input.includeSource ?? isCreated;
+
+  const createdFromRepo = input.createdFromRepo === true;
+  const isCreated = createdFromRepo
+    ? false
+    : needsServiceInstanceCreate(instance);
+  const includeSource = createdFromRepo
+    ? false
+    : (input.includeSource ?? isCreated);
 
   await railwayStep("environmentStageChanges", () =>
     stageWorkerServiceConfig(input.environmentId, input.serviceId, {
