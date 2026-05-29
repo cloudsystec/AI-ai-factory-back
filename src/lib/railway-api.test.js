@@ -4,6 +4,7 @@ import {
   DEFAULT_RAILWAY_CLI_BRANCH,
   DEFAULT_RAILWAY_CLI_REGION,
   DEFAULT_RAILWAY_CLI_REPO,
+  isWorkerServiceConfigured,
   isWorkerServiceHealthy,
   isWorkerServiceNameValid,
   needsServiceInstanceCreate,
@@ -13,6 +14,7 @@ import {
   serviceInstanceHasRepo,
   toStagedVariableMap,
   workerServiceName,
+  workerSkipsBuildOnProvision,
 } from "./railway-api.js";
 
 describe("railway-api CLI defaults", () => {
@@ -108,6 +110,10 @@ describe("railway-api worker health", () => {
     const instance = { source: { repo: DEFAULT_RAILWAY_CLI_REPO } };
     assert.equal(isWorkerServiceHealthy(service, instance, tenantId), true);
     assert.equal(
+      isWorkerServiceConfigured(service, instance, tenantId),
+      true
+    );
+    assert.equal(
       isWorkerServiceHealthy(
         { id: "s1", name: "cli-bb6d9ded-uuid-extra" },
         instance,
@@ -115,5 +121,18 @@ describe("railway-api worker health", () => {
       ),
       false
     );
+  });
+
+  it("workerSkipsBuildOnProvision default true", () => {
+    const prev = process.env.RAILWAY_WORKER_SKIP_BUILD;
+    delete process.env.RAILWAY_WORKER_SKIP_BUILD;
+    try {
+      assert.equal(workerSkipsBuildOnProvision(), true);
+      process.env.RAILWAY_WORKER_SKIP_BUILD = "false";
+      assert.equal(workerSkipsBuildOnProvision(), false);
+    } finally {
+      if (prev === undefined) delete process.env.RAILWAY_WORKER_SKIP_BUILD;
+      else process.env.RAILWAY_WORKER_SKIP_BUILD = prev;
+    }
   });
 });

@@ -3,10 +3,11 @@ import { createLogger } from "../lib/logger.js";
 import {
   assertRailwayConfig,
   applyWorkerServiceConfig,
+  createEmptyWorkerService,
   createVolume,
-  createWorkerService,
   deleteRailwayService,
   fetchServiceInstance,
+  isWorkerServiceConfigured,
   isWorkerServiceHealthy,
   isWorkerServiceNameValid,
   railwayCliRegion,
@@ -14,8 +15,8 @@ import {
   serviceInstanceHasRepo,
   triggerWorkerRedeploy,
   updateServiceName,
-  waitForServiceInstance,
   workerServiceName,
+  workerSkipsBuildOnProvision,
 } from "../lib/railway-api.js";
 import { buildTenantWorkerEnv } from "./tenant-worker-env-service.js";
 
@@ -24,7 +25,6 @@ const log = createLogger("worker-deploy");
 const PROVISIONING_STALE_MS = 15 * 60 * 1000;
 
 /**
- * Serviço ausente, nome corrompido (cli-uuid-uuid…) ou sem repo → apagar e recriar.
  * @param {string} tenantId
  * @param {string | null} serviceId
  * @param {string} environmentId
@@ -58,31 +58,26 @@ async function resolveWorkerServiceId(tenantId, serviceId, environmentId) {
   }
 
   if (!service?.id) {
-    log.warn("Serviço Railway ausente — limpar IDs", {
-      tenantId: tenantId.slice(0, 8),
-      serviceId,
-    });
     await clearIds();
     return null;
   }
 
-  const nameOk = isWorkerServiceNameValid(service.name, tenantId);
-  const hasRepo = serviceInstanceHasRepo(instance);
+  if (isWorkerServiceNameValid(service.name, tenantId)) {
+    return service.id;
+  }
 
-  if (nameOk && hasRepo) return service.id;
-
-  log.warn("Serviço Railway inválido — apagar e recriar", {
+  log.warn("Serviço Railway com nome inválido — apagar e recriar", {
     tenantId: tenantId.slice(0, 8),
     serviceId,
     name: service.name,
     expectedName: workerServiceName(tenantId),
-    hasRepo,
+    hasRepo: serviceInstanceHasRepo(instance),
   });
 
   try {
     await railwayStep("serviceDelete", () => deleteRailwayService(serviceId));
   } catch (e) {
-    log.warn("serviceDelete falhou — apague manualmente no Railway se persistir", {
+    log.warn("serviceDelete falhou — apague manualmente no Railway", {
       tenantId: tenantId.slice(0, 8),
       serviceId,
       err: e instanceof Error ? e.message : String(e),
@@ -158,6 +153,7 @@ export async function updateWorkerDeployment(tenantId, patch) {
 }
 
 /**
+ * Fase 1: serviço + repo + variáveis + volume, sem build Docker (skipDeploys).
  * @param {string} tenantId
  * @param {{ force?: boolean }} [opts]
  */
@@ -171,14 +167,15 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
 
   if (
     !force &&
-    row.status === "deployed" &&
+    (row.status === "deployed" || row.status === "configured") &&
     row.railway_service_id
   ) {
-    log.info("Worker já provisionado", {
+    log.info("Worker já configurado/provisionado", {
       tenantId: tenantId.slice(0, 8),
+      status: row.status,
       serviceId: row.railway_service_id,
     });
-    return { skipped: true, reason: "already_deployed", deployment: row };
+    return { skipped: true, reason: "already_ready", deployment: row };
   }
 
   if (
@@ -191,6 +188,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
   }
 
   const cfg = assertRailwayConfig();
+  const configOnly = workerSkipsBuildOnProvision();
 
   await updateWorkerDeployment(tenantId, {
     status: "provisioning",
@@ -203,12 +201,12 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       row.railway_service_id || null,
       cfg.environmentId
     );
-    const createdFromRepo = !serviceId;
+    const isNewService = !serviceId;
 
     if (!serviceId) {
       const name = workerServiceName(tenantId);
       const created = await railwayStep("serviceCreate", () =>
-        createWorkerService({
+        createEmptyWorkerService({
           projectId: cfg.projectId,
           environmentId: cfg.environmentId,
           name,
@@ -220,13 +218,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
           updateServiceName(serviceId, name)
         );
       }
-      await railwayStep("waitForServiceInstance", () =>
-        waitForServiceInstance(serviceId, cfg.environmentId, {
-          attempts: 15,
-          delayMs: 2000,
-        })
-      );
-      log.info("Serviço Railway criado a partir do repo CLI", {
+      log.info("Serviço Railway vazio criado (sem build)", {
         tenantId: tenantId.slice(0, 8),
         serviceId,
         name,
@@ -253,15 +245,14 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       environmentId: cfg.environmentId,
       serviceId,
       variables: env,
-      createdFromRepo,
+      configOnly,
     });
 
-    let volumeId = createdFromRepo ? null : row.railway_volume_id || null;
+    let volumeId = isNewService ? null : row.railway_volume_id || null;
     const mountPath = `/app/data/tenants/${tenantId}`;
 
     if (!volumeId) {
       const region = cfg.region || railwayCliRegion();
-
       const volume = await railwayStep("volumeCreate", () =>
         createVolume({
           projectId: cfg.projectId,
@@ -277,67 +268,42 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
       });
     }
 
-    const redeploy = await railwayStep("serviceInstanceDeployV2", () =>
-      triggerWorkerRedeploy(cfg.environmentId, serviceId)
-    );
-    if (redeploy.skipped) {
-      log.warn("Redeploy ignorado (Railway ainda a aplicar changes)", {
-        tenantId: tenantId.slice(0, 8),
-        reason: redeploy.reason,
-      });
-    }
-
     const { instance, service } = await fetchServiceInstance(
       serviceId,
       cfg.environmentId
     );
-    const healthy = isWorkerServiceHealthy(service, instance, tenantId);
+    const configured = isWorkerServiceConfigured(service, instance, tenantId);
 
-    if (!healthy && !redeploy.skipped) {
-      const missingRepo = instance && !serviceInstanceHasRepo(instance);
+    if (!configured) {
       throw new Error(
-        missingRepo
-          ? "Serviço sem repo GitHub ligado — reprovisione após deploy do back"
-          : "Config aplicada mas ServiceInstance ainda não visível — aguarde 'Applying changes' no Railway"
+        "Config não aplicada — aguarde 'Applying changes' no Railway e reprovisione"
       );
     }
 
+    const finalStatus = configOnly ? "configured" : "deployed";
+
     await updateWorkerDeployment(tenantId, {
-      status: healthy ? "deployed" : "provisioning",
-      last_error: healthy
-        ? null
-        : "Railway a aplicar changes ou repo em falta — aguardar 2 min e reprovisionar",
-      provisioned_at: healthy ? new Date() : null,
+      status: finalStatus,
+      last_error: null,
+      provisioned_at: new Date(),
     });
 
-    if (!healthy) {
-      log.warn("Provisionamento parcial — aguardar Railway ou repo", {
-        tenantId: tenantId.slice(0, 8),
-        serviceId,
-        hasRepo: serviceInstanceHasRepo(instance),
-        serviceName: service?.name,
-      });
-      return {
-        skipped: false,
-        pendingRailway: true,
-        serviceId,
-        volumeId,
-        mountPath,
-      };
-    }
-
-    log.info("Worker CLI provisionado no Railway", {
+    log.info("Worker CLI configurado no Railway", {
       tenantId: tenantId.slice(0, 8),
       serviceId,
       volumeId,
       mountPath,
+      hasRepo: serviceInstanceHasRepo(instance),
+      configOnly,
     });
 
     return {
       skipped: false,
+      configOnly,
       serviceId,
       volumeId,
       mountPath,
+      status: finalStatus,
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -348,6 +314,82 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     log.error("Falha ao provisionar worker Railway", {
       tenantId: tenantId.slice(0, 8),
       err: message,
+    });
+    throw e;
+  }
+}
+
+/**
+ * Fase 2: Dockerfile + commit com deploy (build Docker).
+ * @param {string} tenantId
+ */
+export async function deployWorkerForTenant(tenantId) {
+  await ensureWorkerDeploymentRow(tenantId);
+  const row = await getWorkerDeployment(tenantId);
+  if (!row?.railway_service_id) {
+    throw new Error("Provisione o worker antes de fazer build/deploy");
+  }
+
+  const cfg = assertRailwayConfig();
+  const serviceId = row.railway_service_id;
+
+  await updateWorkerDeployment(tenantId, {
+    status: "provisioning",
+    last_error: null,
+  });
+
+  try {
+    const env = await buildTenantWorkerEnv(tenantId);
+
+    await applyWorkerServiceConfig({
+      environmentId: cfg.environmentId,
+      serviceId,
+      variables: env,
+      configOnly: false,
+    });
+
+    const redeploy = await railwayStep("serviceInstanceDeployV2", () =>
+      triggerWorkerRedeploy(cfg.environmentId, serviceId)
+    );
+
+    const { instance, service } = await fetchServiceInstance(
+      serviceId,
+      cfg.environmentId
+    );
+    const healthy = isWorkerServiceHealthy(service, instance, tenantId);
+
+    if (!healthy && !redeploy.skipped) {
+      throw new Error(
+        "Build iniciado mas serviço ainda não está pronto — aguarde no Railway"
+      );
+    }
+
+    await updateWorkerDeployment(tenantId, {
+      status: healthy ? "deployed" : "configured",
+      last_error: healthy
+        ? null
+        : "Build em curso no Railway — aguardar deployment",
+      provisioned_at: healthy ? new Date() : row.provisioned_at,
+    });
+
+    log.info("Worker CLI build/deploy disparado", {
+      tenantId: tenantId.slice(0, 8),
+      serviceId,
+      healthy,
+      redeploySkipped: redeploy.skipped,
+    });
+
+    return {
+      serviceId,
+      deploymentId: redeploy.deploymentId,
+      status: healthy ? "deployed" : "configured",
+      buildPending: !healthy,
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await updateWorkerDeployment(tenantId, {
+      status: "failed",
+      last_error: message.slice(0, 2000),
     });
     throw e;
   }

@@ -87,7 +87,14 @@ Fluxo:
 3. CLI regista → `tenants.worker_status = online`.
 4. Admin configura **bots** (Admin → Bots) antes do cliente usar Play.
 
-Estado em `tenant_worker_deployments` (`pending` / `provisioning` / `deployed` / `failed`). Retry: `POST /admin/tenants/:id/worker/provision` ou botão **Reprovisionar worker** no portal admin.
+Estado em `tenant_worker_deployments` (`pending` / `provisioning` / `configured` / `deployed` / `failed`).
+
+Por defeito o provisionamento **não faz build Docker** (`skipDeploys`): cria serviço, liga repo, variáveis e volume. Build num passo à parte:
+
+- `POST /admin/tenants/:id/worker/provision` — fase 1 (config)
+- `POST /admin/tenants/:id/worker/deploy` — fase 2 (build + deploy)
+
+Retry config: botão **Reprovisionar worker** no portal admin. Build: **Build / Deploy** (quando status `configured`).
 
 Runbook onboarding:
 

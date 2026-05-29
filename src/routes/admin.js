@@ -32,6 +32,7 @@ import {
 } from "../services/worker-bot-service.js";
 import {
   getWorkerDeployment,
+  deployWorkerForTenant,
   retryWorkerProvision,
 } from "../services/worker-deployment-service.js";
 
@@ -111,6 +112,27 @@ adminRouter.post("/tenants/:tenantId/worker/provision", async (req, res) => {
     const deployment = await getWorkerDeployment(tenantId);
     res.status(500).json({
       error: e instanceof Error ? e.message : "provision failed",
+      deployment,
+    });
+  }
+});
+
+adminRouter.post("/tenants/:tenantId/worker/deploy", async (req, res) => {
+  const { tenantId } = req.params;
+  const { rows } = await query("SELECT id FROM tenants WHERE id = $1", [
+    tenantId,
+  ]);
+  if (!rows[0]) {
+    return res.status(404).json({ error: "Tenant não encontrado" });
+  }
+  try {
+    const result = await deployWorkerForTenant(tenantId);
+    const deployment = await getWorkerDeployment(tenantId);
+    res.json({ ok: true, result, deployment });
+  } catch (e) {
+    const deployment = await getWorkerDeployment(tenantId);
+    res.status(500).json({
+      error: e instanceof Error ? e.message : "deploy failed",
       deployment,
     });
   }

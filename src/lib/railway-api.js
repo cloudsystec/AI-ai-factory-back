@@ -55,10 +55,25 @@ export function serviceInstanceHasRepo(instance, repo = railwayCliRepo()) {
  * @param {unknown} instance
  * @param {string} tenantId
  */
-export function isWorkerServiceHealthy(service, instance, tenantId) {
+/** Por defeito: provisionar só config (repo/vars/volume), build num passo à parte. */
+export function workerSkipsBuildOnProvision() {
+  return process.env.RAILWAY_WORKER_SKIP_BUILD !== "false";
+}
+
+/**
+ * Serviço criado no Railway com nome certo e instância no ambiente.
+ * @param {unknown} service
+ * @param {unknown} instance
+ * @param {string} tenantId
+ */
+export function isWorkerServiceConfigured(service, instance, tenantId) {
   const svc = /** @type {{ id?: string, name?: string } | null} */ (service);
   if (!svc?.id || !instance) return false;
-  if (!isWorkerServiceNameValid(svc.name, tenantId)) return false;
+  return isWorkerServiceNameValid(svc.name, tenantId);
+}
+
+export function isWorkerServiceHealthy(service, instance, tenantId) {
+  if (!isWorkerServiceConfigured(service, instance, tenantId)) return false;
   return serviceInstanceHasRepo(instance);
 }
 
@@ -135,8 +150,29 @@ export async function fetchServiceInstance(serviceId, environmentId) {
 }
 
 /**
- * Cria serviço já ligado ao repo GitHub (cria ServiceInstance no ambiente).
- * Preferir a createEmptyService + staging para novos workers.
+ * Cria serviço vazio (sem repo) — evita build imediato; repo entra no staging.
+ * @param {{ projectId: string, environmentId: string, name: string }} input
+ */
+export async function createEmptyWorkerService(input) {
+  const data = await railwayGraphql(
+    `mutation ServiceCreate($input: ServiceCreateInput!) {
+      serviceCreate(input: $input) { id name }
+    }`,
+    {
+      input: {
+        projectId: input.projectId,
+        environmentId: input.environmentId,
+        name: input.name,
+      },
+    }
+  );
+  const svc = data?.serviceCreate;
+  if (!svc?.id) throw new Error("serviceCreate não devolveu id");
+  return svc;
+}
+
+/**
+ * Cria serviço já ligado ao repo (dispara build) — usar só em deploy explícito.
  * @param {{ projectId: string, environmentId: string, name: string, repo?: string, branch?: string }} input
  */
 export async function createWorkerService(input) {
@@ -187,12 +223,9 @@ export async function deleteRailwayService(serviceId) {
   );
 }
 
-/**
- * @deprecated Usar createWorkerService. Mantido só para referência.
- * @param {{ projectId: string, name: string, environmentId: string }} input
- */
+/** @deprecated Usar createEmptyWorkerService */
 export async function createEmptyService(input) {
-  return createWorkerService(input);
+  return createEmptyWorkerService(input);
 }
 
 /**
@@ -233,9 +266,12 @@ export function toStagedVariableMap(variables) {
  *   isCreated?: boolean,
  *   dockerfilePath?: string,
  *   includeSource?: boolean,
+ *   configOnly?: boolean,
  * }} config
  */
 export async function stageWorkerServiceConfig(environmentId, serviceId, config) {
+  const configOnly = config.configOnly === true;
+
   /** @type {Record<string, unknown>} */
   const servicePatch = {
     variables: toStagedVariableMap(config.variables),
@@ -249,7 +285,7 @@ export async function stageWorkerServiceConfig(environmentId, serviceId, config)
     servicePatch.source = { repo: config.repo, branch: config.branch };
   }
 
-  if (config.dockerfilePath) {
+  if (!configOnly && config.dockerfilePath) {
     servicePatch.build = {
       builder: "DOCKERFILE",
       dockerfilePath: config.dockerfilePath,
@@ -282,8 +318,9 @@ export async function stageWorkerServiceConfig(environmentId, serviceId, config)
 /**
  * @param {string} environmentId
  * @param {string} [message]
+ * @param {{ skipDeploys?: boolean }} [opts]
  */
-export async function commitStagedEnvironment(environmentId, message) {
+export async function commitStagedEnvironment(environmentId, message, opts = {}) {
   await railwayGraphql(
     `mutation CommitStaged($environmentId: String!, $message: String, $skipDeploys: Boolean) {
       environmentPatchCommitStaged(
@@ -295,7 +332,7 @@ export async function commitStagedEnvironment(environmentId, message) {
     {
       environmentId,
       message: message || "AI Factory worker provision",
-      skipDeploys: false,
+      skipDeploys: opts.skipDeploys === true,
     }
   );
 }
@@ -406,6 +443,7 @@ export function needsServiceInstanceCreate(instance) {
  *   variables: Record<string, string>,
  *   includeSource?: boolean,
  *   createdFromRepo?: boolean,
+ *   configOnly?: boolean,
  * }} input
  */
 export async function applyWorkerServiceConfig(input) {
@@ -413,15 +451,14 @@ export async function applyWorkerServiceConfig(input) {
   const branch = railwayCliBranch();
   const region = railwayCliRegion();
   const dockerfilePath = process.env.RAILWAY_CLI_DOCKERFILE_PATH || "Dockerfile";
+  const configOnly =
+    input.configOnly ?? workerSkipsBuildOnProvision();
 
   const { instance } = await railwayStep("fetchServiceInstance", () =>
     fetchServiceInstance(input.serviceId, input.environmentId)
   );
 
-  const createdFromRepo = input.createdFromRepo === true;
-  const isCreated = createdFromRepo
-    ? false
-    : needsServiceInstanceCreate(instance);
+  const isCreated = needsServiceInstanceCreate(instance);
   const includeSource = !serviceInstanceHasRepo(instance);
 
   await railwayStep("environmentStageChanges", () =>
@@ -433,15 +470,25 @@ export async function applyWorkerServiceConfig(input) {
       isCreated,
       dockerfilePath,
       includeSource,
+      configOnly,
     })
   );
 
   await railwayStep("environmentPatchCommitStaged", () =>
-    commitStagedEnvironment(input.environmentId)
+    commitStagedEnvironment(
+      input.environmentId,
+      configOnly
+        ? "AI Factory worker config (no build)"
+        : "AI Factory worker deploy",
+      { skipDeploys: configOnly }
+    )
   );
 
   await railwayStep("waitForServiceInstance", () =>
-    waitForServiceInstance(input.serviceId, input.environmentId)
+    waitForServiceInstance(input.serviceId, input.environmentId, {
+      attempts: configOnly ? 15 : 30,
+      delayMs: configOnly ? 2000 : 3000,
+    })
   );
 }
 
