@@ -148,16 +148,16 @@ describe("railway-api worker health", () => {
     }
   });
 
-  it("workerSkipsVolumeOnProvision default true", () => {
-    const prev = process.env.RAILWAY_WORKER_CREATE_VOLUME;
-    delete process.env.RAILWAY_WORKER_CREATE_VOLUME;
+  it("workerSkipsVolumeOnProvision default false (volume incluído)", () => {
+    const prev = process.env.RAILWAY_WORKER_SKIP_VOLUME;
+    delete process.env.RAILWAY_WORKER_SKIP_VOLUME;
     try {
-      assert.equal(workerSkipsVolumeOnProvision(), true);
-      process.env.RAILWAY_WORKER_CREATE_VOLUME = "true";
       assert.equal(workerSkipsVolumeOnProvision(), false);
+      process.env.RAILWAY_WORKER_SKIP_VOLUME = "true";
+      assert.equal(workerSkipsVolumeOnProvision(), true);
     } finally {
-      if (prev === undefined) delete process.env.RAILWAY_WORKER_CREATE_VOLUME;
-      else process.env.RAILWAY_WORKER_CREATE_VOLUME = prev;
+      if (prev === undefined) delete process.env.RAILWAY_WORKER_SKIP_VOLUME;
+      else process.env.RAILWAY_WORKER_SKIP_VOLUME = prev;
     }
   });
 });

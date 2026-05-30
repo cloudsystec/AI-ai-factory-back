@@ -60,9 +60,9 @@ export function workerSkipsBuildOnProvision() {
   return process.env.RAILWAY_WORKER_SKIP_BUILD === "true";
 }
 
-/** Por defeito: não criar volume no provisionamento (attach manual ou fase posterior). */
+/** Por defeito cria volume em /app/data/tenants/<uuid>. Skip com RAILWAY_WORKER_SKIP_VOLUME=true */
 export function workerSkipsVolumeOnProvision() {
-  return process.env.RAILWAY_WORKER_CREATE_VOLUME !== "true";
+  return process.env.RAILWAY_WORKER_SKIP_VOLUME === "true";
 }
 
 /**
