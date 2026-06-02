@@ -2,12 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
-import { getPool } from "./pool.js";
+import { getPool, closePool } from "./pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, "../../migrations");
 
-async function main() {
+/**
+ * @param {{ closePoolAfter?: boolean }} [opts]
+ */
+export async function runMigrations(opts = {}) {
   const pool = getPool();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -44,10 +47,23 @@ async function main() {
       throw e;
     }
   }
-  await pool.end();
+
+  if (opts.closePoolAfter) {
+    await closePool();
+  }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+async function main() {
+  await runMigrations({ closePoolAfter: true });
+}
+
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.join(__dirname, "migrate.js");
+
+if (isMain) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

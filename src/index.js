@@ -20,9 +20,11 @@ import {
 import { executionRouter } from "./routes/execution.js";
 import { createLogger, logHttpRequest } from "./lib/logger.js";
 import { initWsHub } from "./lib/ws-hub.js";
+import { runMigrations } from "./db/migrate.js";
 const log = createLogger("back");
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
+let booted = false;
 
 app.use(
   cors({
@@ -46,7 +48,16 @@ app.use((req, res, next) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, booted });
+});
+
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+  if (!booted) {
+    res.status(503).json({ ok: false, status: "starting" });
+    return;
+  }
+  next();
 });
 
 /** Alias: GitHub App pode estar configurada com /api/auth/github/callback */
@@ -72,17 +83,29 @@ const API_BUILD = "git-pr-v2";
 
 const server = createServer(app);
 
-server.listen(PORT, () => {
-  log.info("AI Factory API online", {
-    url: `http://localhost:${PORT}`,
-    build: API_BUILD,
-    ws: "/ws",
-    color: process.env.AI_FACTORY_LOG_COLOR !== "0",
-  });
-  log.info(
-    "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
-  );
-  initWsHub(server).catch((err) => {
-    log.warn("WebSocket hub init failed", { error: err.message });
-  });
+server.listen(PORT, "0.0.0.0", () => {
+  log.info("Healthcheck disponível", { port: PORT });
+  void boot();
 });
+
+async function boot() {
+  try {
+    await runMigrations();
+    await initWsHub(server);
+    booted = true;
+    log.info("AI Factory API online", {
+      url: `http://0.0.0.0:${PORT}`,
+      build: API_BUILD,
+      ws: "/ws",
+      color: process.env.AI_FACTORY_LOG_COLOR !== "0",
+    });
+    log.info(
+      "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
+    );
+  } catch (err) {
+    log.error("Boot falhou", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1);
+  }
+}

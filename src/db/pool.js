@@ -18,3 +18,10 @@ export function getPool() {
 export async function query(text, params) {
   return getPool().query(text, params);
 }
+
+export async function closePool() {
+  if (pool) {
+    await pool.end();
+    pool = null;
+  }
+}

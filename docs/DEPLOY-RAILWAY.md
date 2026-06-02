@@ -4,7 +4,7 @@ Dois **serviços** no projeto Railway, mesmo repositório, pastas distintas.
 
 | Serviço | Root Directory | Config file | Start | Health |
 |---------|----------------|-------------|-------|--------|
-| **API** | `ai-factory-back` | `railway.json` | `migrate` + `src/index.js` | `/health` |
+| **API** | `ai-factory-back` | `railway.json` | `node src/index.js` (migrate no boot) | `/health` |
 | **Billing poller** | `ai-factory-poller` | `railway.json` | `node src/index.js` | `/health` (só liveness) |
 
 O poller **não** corre na API.
@@ -19,7 +19,7 @@ O poller **não** corre na API.
 2. **Root Directory:** `ai-factory-back`
 3. **Settings → Config-as-code:** `railway.json` (default na raiz do back)
 4. **Variables:** `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `WORKER_SECRET`, `CORS_ORIGIN`, `PUBLIC_BACK_URL`, etc. (ver `.env.example`)
-5. Deploy: migrações correm no start da API.
+5. Deploy: migrações correm no arranque da API (HTTP `/health` responde imediatamente).
 
 ### 2. Serviço billing poller (novo)
 
