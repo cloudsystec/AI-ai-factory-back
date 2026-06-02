@@ -87,6 +87,54 @@ export function isTaskDone(task, stateByTaskId) {
 }
 
 /**
+ * Task concluída com sucesso (done, sem blocked/erro).
+ * @param {object} task
+ * @param {Map<string, object>} stateByTaskId
+ */
+export function isTaskSuccessfullyDone(task, stateByTaskId) {
+  const rt = stateByTaskId.get(task.id);
+  if (rt?.status === "blocked" || rt?.blockReason || rt?.failedStep) return false;
+  if (rt?.status && rt.status !== "done") return false;
+  return rt?.status === "done" || task.status === "done";
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function readMicroReleasesMap(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT micro_id, release_status, merged_at
+     FROM micro_releases WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
+  );
+  return new Map(rows.map((r) => [r.micro_id, r]));
+}
+
+/**
+ * @param {string[]} approvedMicroIds
+ * @param {Map<string, { release_status?: string, merged_at?: Date|null }>} releaseByMicro
+ */
+export function areAllApprovedMicrosReleased(approvedMicroIds, releaseByMicro) {
+  if (!Array.isArray(approvedMicroIds) || approvedMicroIds.length === 0) return false;
+  if (!releaseByMicro || releaseByMicro.size === 0) return false;
+  return approvedMicroIds.every((id) => {
+    const rel = releaseByMicro.get(id);
+    return rel && (rel.release_status === "merged" || rel.merged_at != null);
+  });
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export function readApprovedMicroIds(tenantId, projectSlug) {
+  return readMicrosFromVolume(tenantId, projectSlug)
+    .filter((m) => m.approved === true && m.validationStatus === "approved")
+    .map((m) => m.id);
+}
+
+/**
  * @param {object} task
  * @param {object|undefined} rt
  */

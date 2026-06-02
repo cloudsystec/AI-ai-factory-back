@@ -4,7 +4,10 @@ import { log } from "../lib/logger.js";
 import {
   readBacklogTasks,
   getMicroWaveState,
-  isTaskDone,
+  isTaskSuccessfullyDone,
+  readMicroReleasesMap,
+  areAllApprovedMicrosReleased,
+  readApprovedMicroIds,
 } from "./micro-wave-service.js";
 import { readTasksState } from "./task-state-service.js";
 
@@ -35,101 +38,110 @@ export async function assertProjectNotCompleted(tenantId, projectSlug) {
 }
 
 /**
- * Critério alinhado com scope-dashboard-state + micro-wave (backlog + runtime).
  * @param {unknown} scopeState
  * @param {object[]} backlogTasks
  * @param {object[]} tasksState
- * @param {string|null|undefined} waveOpenMicroId
+ * @param {{ waveOpenMicroId?: string|null, releaseByMicro?: Map<string, object>, approvedMicroIds?: string[] }} [opts]
  */
 export function assessProjectCompletion(
   scopeState,
   backlogTasks,
   tasksState,
-  waveOpenMicroId
+  opts = {}
 ) {
-  if (scopeState?.projectCompleted) return true;
-  if (scopeState?.allTasksSuccessful && scopeState?.wavesCompleteScenario) {
-    return true;
-  }
+  const waveOpenMicroId = opts.waveOpenMicroId ?? null;
+  const releaseByMicro = opts.releaseByMicro;
 
-  if (
-    Array.isArray(tasksState) &&
-    tasksState.some((t) => t.status === "blocked" || t.blockReason)
-  ) {
-    return false;
-  }
+  if (scopeState?.projectCompleted) return true;
 
   const microCount = Number(scopeState?.microCount) || 0;
   const microPoDone =
     microCount > 0 &&
     (Number(scopeState?.microsPendingPo) || 0) === 0 &&
     (Number(scopeState?.microsApproved) || 0) > 0;
+  if (!microPoDone) return false;
+
+  if (!scopeState?.wavesCompleteScenario) return false;
+  if (waveOpenMicroId || scopeState?.openMicro) return false;
 
   const stateById = new Map(
     (Array.isArray(tasksState) ? tasksState : []).map((t) => [t.id, t])
   );
+
+  if (
+    Array.isArray(tasksState) &&
+    tasksState.some((t) => t.status === "blocked" || t.blockReason || t.failedStep)
+  ) {
+    return false;
+  }
+
   const delivered = (Array.isArray(backlogTasks) ? backlogTasks : []).filter(
     (t) => t.sourceMicroId
   );
+  if (delivered.length === 0) return false;
 
-  const allDeliveredDone =
-    delivered.length === 0 ||
-    delivered.every((t) => isTaskDone(t, stateById));
+  const allTasksSuccessful = delivered.every((t) =>
+    isTaskSuccessfullyDone(t, stateById)
+  );
+  if (!allTasksSuccessful) return false;
 
-  if (!allDeliveredDone) return false;
+  const approvedMicroIds =
+    (Array.isArray(opts.approvedMicroIds) && opts.approvedMicroIds.length > 0
+      ? opts.approvedMicroIds
+      : (scopeState?.micros || []).map((m) => m.id).filter(Boolean)) || [];
 
-  // Ondas fechadas no CLI — fonte de verdade mesmo se wavePhase no ficheiro estiver stale
-  if (scopeState?.wavesCompleteScenario && microPoDone) {
-    return true;
-  }
+  if (approvedMicroIds.length === 0) return false;
 
-  if (waveOpenMicroId) return false;
-
-  // Todas as entregas concluídas e sem micro aberto no dispatch — finaliza mesmo se openMicro no scope estiver stale (backlog desincronizado).
-  if (allDeliveredDone && microPoDone) {
-    return true;
-  }
-
-  if (scopeState?.openMicro) return false;
-
-  if (delivered.length === 0) {
-    return microPoDone;
-  }
-
-  return microPoDone;
+  return areAllApprovedMicrosReleased(approvedMicroIds, releaseByMicro);
 }
 
 /**
  * Valida se todas as tasks/micros estão concluídas com sucesso.
  * @param {unknown} scopeState
  * @param {unknown[]} tasks
- * @param {{ backlogTasks?: object[], tasksState?: object[], waveOpenMicroId?: string|null }} [opts]
+ * @param {{ backlogTasks?: object[], tasksState?: object[], waveOpenMicroId?: string|null, releaseByMicro?: Map<string, object>, approvedMicroIds?: string[] }} [opts]
  */
 export function isProjectFullyComplete(scopeState, tasks, opts = {}) {
   if (opts.backlogTasks && opts.tasksState) {
-    return assessProjectCompletion(
-      scopeState,
-      opts.backlogTasks,
-      opts.tasksState,
-      opts.waveOpenMicroId
-    );
+    return assessProjectCompletion(scopeState, opts.backlogTasks, opts.tasksState, {
+      waveOpenMicroId: opts.waveOpenMicroId,
+      releaseByMicro: opts.releaseByMicro,
+      approvedMicroIds: opts.approvedMicroIds,
+    });
   }
 
-  if (scopeState?.allTasksSuccessful && scopeState?.wavesCompleteScenario) {
-    return true;
+  if (!scopeState?.wavesCompleteScenario || !scopeState?.allTasksSuccessful) {
+    return false;
   }
-
-  if (!scopeState?.wavesCompleteScenario) return false;
 
   const list = Array.isArray(tasks) ? tasks : [];
   if (list.length === 0) return false;
 
   return list.every((t) => {
     if (!t || typeof t !== "object") return false;
-    if (t.status === "blocked" || t.blockReason) return false;
+    if (t.status === "blocked" || t.blockReason || t.failedStep) return false;
     if (t.currentAgent === "Human Approval Pending") return false;
     return t.status === "done";
   });
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+async function loadCompletionContext(tenantId, projectSlug) {
+  const backlog = readBacklogTasks(tenantId, projectSlug);
+  const tasksState = readTasksState(tenantId, projectSlug);
+  const wave = await getMicroWaveState(tenantId, projectSlug);
+  const releaseByMicro = await readMicroReleasesMap(tenantId, projectSlug);
+  const approvedMicroIds = readApprovedMicroIds(tenantId, projectSlug);
+  return {
+    backlog,
+    tasksState,
+    waveOpenMicroId: wave.openMicroId,
+    releaseByMicro,
+    approvedMicroIds,
+  };
 }
 
 /**
@@ -185,15 +197,15 @@ export async function maybeCompleteProjectFromSnapshot(
   const current = await getProjectStatus(tenantId, projectSlug);
   if (current.status === "completed") return null;
 
-  const backlog = readBacklogTasks(tenantId, projectSlug);
-  const tasksState = readTasksState(tenantId, projectSlug);
-  const wave = await getMicroWaveState(tenantId, projectSlug);
+  const ctx = await loadCompletionContext(tenantId, projectSlug);
 
   if (
     !isProjectFullyComplete(scopeState, tasks, {
-      backlogTasks: backlog,
-      tasksState,
-      waveOpenMicroId: wave.openMicroId,
+      backlogTasks: ctx.backlog,
+      tasksState: ctx.tasksState,
+      waveOpenMicroId: ctx.waveOpenMicroId,
+      releaseByMicro: ctx.releaseByMicro,
+      approvedMicroIds: ctx.approvedMicroIds,
     })
   ) {
     return null;
@@ -239,14 +251,14 @@ export async function tryCompleteProjectFromLiveState(tenantId, projectSlug) {
     tasks = await getTasksSnapshot(tenantId, projectSlug);
   }
 
-  const backlog = readBacklogTasks(tenantId, projectSlug);
-  const tasksState = readTasksState(tenantId, projectSlug);
-  const wave = await getMicroWaveState(tenantId, projectSlug);
+  const ctx = await loadCompletionContext(tenantId, projectSlug);
 
   const complete = isProjectFullyComplete(scopeState, tasks, {
-    backlogTasks: backlog,
-    tasksState,
-    waveOpenMicroId: wave.openMicroId,
+    backlogTasks: ctx.backlog,
+    tasksState: ctx.tasksState,
+    waveOpenMicroId: ctx.waveOpenMicroId,
+    releaseByMicro: ctx.releaseByMicro,
+    approvedMicroIds: ctx.approvedMicroIds,
   });
 
   if (!complete) {
@@ -254,9 +266,17 @@ export async function tryCompleteProjectFromLiveState(tenantId, projectSlug) {
       project: projectSlug,
       wavesCompleteScenario: scopeState?.wavesCompleteScenario ?? false,
       allTasksSuccessful: scopeState?.allTasksSuccessful ?? false,
-      waveOpenMicroId: wave.openMicroId,
-      backlogTasks: backlog.length,
-      blockedRuntime: tasksState.filter((t) => t.status === "blocked").length,
+      waveOpenMicroId: ctx.waveOpenMicroId,
+      backlogTasks: ctx.backlog.length,
+      approvedMicros: ctx.approvedMicroIds.length,
+      releasedMicros: ctx.approvedMicroIds.filter((id) =>
+        ctx.releaseByMicro.has(id)
+      ).length,
+      mergedMicros: ctx.approvedMicroIds.filter((id) => {
+        const rel = ctx.releaseByMicro.get(id);
+        return rel && (rel.release_status === "merged" || rel.merged_at != null);
+      }).length,
+      blockedRuntime: ctx.tasksState.filter((t) => t.status === "blocked").length,
     });
     return { completed: false };
   }
