@@ -18,6 +18,7 @@ import {
   handleGitHubInstallCallback,
 } from "./routes/github.js";
 import { executionRouter } from "./routes/execution.js";
+import { macroHelpRouter } from "./routes/macro-help.js";
 import { createLogger, logHttpRequest } from "./lib/logger.js";
 import { initWsHub } from "./lib/ws-hub.js";
 import { runMigrations } from "./db/migrate.js";
@@ -71,6 +72,7 @@ app.use("/api/projects/:slug/agents", projectAgentsRouter);
 app.use("/api/execution", executionRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/billing", billingRouter);
+app.use("/api/macro-help", macroHelpRouter);
 app.use("/api", projectDashboardRouter);
 app.use("/worker", workerRouter);
 app.use("/admin", adminRouter);

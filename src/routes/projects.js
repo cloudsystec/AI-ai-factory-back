@@ -51,6 +51,7 @@ import {
 } from "../services/macro-scope-service.js";
 
 import { approveTaskHumanValidation } from "../services/task-state-service.js";
+import { assertProjectCreationReady } from "../services/macro-help-service.js";
 
 
 
@@ -71,6 +72,14 @@ projectsRouter.get("/", async (req, res) => {
 
 
 projectsRouter.post("/", requireCapability("write"), async (req, res) => {
+  try {
+    await assertProjectCreationReady(req.user.tenantId);
+  } catch (err) {
+    return res.status(err.status || 403).json({
+      error: err.message,
+      code: err.code ?? undefined,
+    });
+  }
 
   const { name, slug, scope, git } = req.body ?? {};
 

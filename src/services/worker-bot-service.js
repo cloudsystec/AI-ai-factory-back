@@ -234,6 +234,24 @@ export async function assertBotsReadyForSlots(tenantId, workerSlots) {
 
 /**
  * @param {string} tenantId
+ * @returns {Promise<{ slot: number, botEmail: string, apiKey: string }|null>}
+ */
+export async function getFirstReadyBot(tenantId) {
+  await ensureWorkerBotRows(tenantId);
+  const max = await getTenantSlotsMax(tenantId);
+  for (let slot = 1; slot <= max; slot += 1) {
+    if (!(await isBotReady(tenantId, slot))) continue;
+    const apiKey = await getBotWorkerApiKeyDecrypted(tenantId, slot);
+    const botEmail = await getBotEmailForSlot(tenantId, slot);
+    if (apiKey && botEmail) {
+      return { slot, botEmail, apiKey };
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {string} tenantId
  */
 export async function assertAtLeastOneBotReady(tenantId) {
   const n = await countBotsReady(tenantId);
