@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { canStartJob, computeCharge } from "../billing/index.js";
+import {
+  normalizeChargeSource,
+  resolveJobChargeSource,
+} from "../lib/charge-source.js";
 import { query } from "../db/pool.js";
 import {
   appendJobLogLine,
@@ -412,7 +416,7 @@ export async function appendJobLog(jobId, line) {
 /**
  * @param {string} tenantId
  * @param {string} jobId
- * @param {{ status: string, costBaseUsd?: number, exitCode?: number }} payload
+ * @param {{ status: string, costBaseUsd?: number, exitCode?: number, chargeSource?: string }} payload
  */
 export async function completeJob(tenantId, jobId, payload) {
   const status =
@@ -425,6 +429,7 @@ export async function completeJob(tenantId, jobId, payload) {
   const cb =
     payload.costBaseUsd ??
     Number(process.env.BILLING_CB_ESTIMATE_USD || 0.5);
+  const chargeSource = resolveJobChargeSource(payload);
   const billingStatus =
     status === "cancelled" ? "cancelled" : "completed";
   const { cc, fee } = computeCharge(cb, billingStatus);
@@ -457,14 +462,15 @@ export async function completeJob(tenantId, jobId, payload) {
 
     await client.query(
       `UPDATE jobs SET status = $2, finished_at = now(), exit_code = $3,
-       cost_base_usd = $4, charge_usd = $5 WHERE id = $1 AND tenant_id = $6`,
-      [jobId, status, payload.exitCode ?? null, cb, cc, tenantId]
+       cost_base_usd = $4, charge_usd = $5, charge_source = $7
+       WHERE id = $1 AND tenant_id = $6`,
+      [jobId, status, payload.exitCode ?? null, cb, cc, tenantId, chargeSource]
     );
     await client.query(
       `INSERT INTO usage_events (
          tenant_id, execution_id, job_id, cost_base_usd, charge_usd, status,
-         executor_email, bot_email, worker_slot
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         executor_email, bot_email, worker_slot, charge_source
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (execution_id) DO NOTHING`,
       [
         tenantId,
@@ -476,6 +482,7 @@ export async function completeJob(tenantId, jobId, payload) {
         executorEmail,
         botEmail,
         workerSlot,
+        chargeSource,
       ]
     );
     await client.query(
@@ -541,10 +548,13 @@ export async function completeJob(tenantId, jobId, payload) {
  * o balance do tenant pela diferença (novo - antigo).
  * @param {string} tenantId
  * @param {string} jobId
- * @param {{ costBaseUsd: number }} payload
+ * @param {{ costBaseUsd: number, chargeSource?: string }} payload
  */
 export async function updateJobBilling(tenantId, jobId, payload) {
   const newCb = Number(payload.costBaseUsd) || 0;
+  const chargeSource = normalizeChargeSource(
+    payload.chargeSource || "cursor_admin_api"
+  );
   const pool = (await import("../db/pool.js")).getPool();
   const client = await pool.connect();
   try {
@@ -568,14 +578,14 @@ export async function updateJobBilling(tenantId, jobId, payload) {
     const chargeDelta = newCc - oldCc;
 
     await client.query(
-      `UPDATE jobs SET cost_base_usd = $3, charge_usd = $4, updated_at = now()
+      `UPDATE jobs SET cost_base_usd = $3, charge_usd = $4, charge_source = $5, updated_at = now()
        WHERE id = $1 AND tenant_id = $2`,
-      [jobId, tenantId, newCb, newCc]
+      [jobId, tenantId, newCb, newCc, chargeSource]
     );
     await client.query(
-      `UPDATE usage_events SET cost_base_usd = $2, charge_usd = $3
-       WHERE job_id = $1 AND tenant_id = $4`,
-      [jobId, newCb, newCc, tenantId]
+      `UPDATE usage_events SET cost_base_usd = $2, charge_usd = $3, charge_source = $4
+       WHERE job_id = $1 AND tenant_id = $5`,
+      [jobId, newCb, newCc, chargeSource, tenantId]
     );
     if (chargeDelta !== 0) {
       await client.query(

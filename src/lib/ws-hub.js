@@ -145,7 +145,21 @@ async function subscribeRedisJobEvents() {
       }
     });
 
-    log.debug("Redis pSubscribe activo", { pattern: "aifactory:job:*:live" });
+    await redisSub.pSubscribe("aifactory:tenant:*:billing", (message, channel) => {
+      try {
+        const tenantId = channel
+          .replace("aifactory:tenant:", "")
+          .replace(":billing", "");
+        const event = JSON.parse(message);
+        broadcast(tenantId, event);
+      } catch {
+        /* ignore */
+      }
+    });
+
+    log.debug("Redis pSubscribe activo", {
+      patterns: ["aifactory:job:*:live", "aifactory:tenant:*:billing"],
+    });
   } catch (err) {
     log.warn("Redis subscribe falhou — job events sem WS push", { error: err.message });
   }

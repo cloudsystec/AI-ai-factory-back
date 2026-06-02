@@ -14,7 +14,7 @@ export const projectAgentsRouter = Router({ mergeParams: true });
 projectAgentsRouter.use(
   requireAuth,
   requireActivePlan,
-  requireCapability("write")
+  requireCapability("execute")
 );
 
 function assertRoleKey(roleKey) {

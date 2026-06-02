@@ -20,7 +20,6 @@ import {
 import { executionRouter } from "./routes/execution.js";
 import { createLogger, logHttpRequest } from "./lib/logger.js";
 import { initWsHub } from "./lib/ws-hub.js";
-
 const log = createLogger("back");
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -81,5 +80,8 @@ initWsHub(server).then(() => {
       ws: "/ws",
       color: process.env.AI_FACTORY_LOG_COLOR !== "0",
     });
+    log.info(
+      "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
+    );
   });
 });

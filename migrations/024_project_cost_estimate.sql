@@ -1,0 +1,4 @@
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS planned_cost_usd NUMERIC(12, 6),
+  ADD COLUMN IF NOT EXISTS planned_cost_meta JSONB,
+  ADD COLUMN IF NOT EXISTS planned_cost_at TIMESTAMPTZ;

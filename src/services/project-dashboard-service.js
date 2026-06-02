@@ -241,6 +241,16 @@ export async function upsertDashboardSnapshot(tenantId, projectSlug, tasks, scop
       scopeState == null ? null : JSON.stringify(scopeState),
     ]
   );
+
+  const microCount = Number(scopeState?.microCount) || 0;
+  if (microCount > 0) {
+    const taskList = Array.isArray(tasks) ? tasks : [];
+    const { computeAndStorePlannedCost } = await import("./project-billing-service.js");
+    await computeAndStorePlannedCost(tenantId, projectSlug, {
+      microCount,
+      taskCount: taskList.length,
+    });
+  }
 }
 
 /**

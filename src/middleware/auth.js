@@ -69,7 +69,7 @@ export async function requireActivePlan(req, res, next) {
   const { rows } = await query(
     `SELECT id, name, plan_active_until, balance_usd, agent_slots_max,
             agent_slots_in_use, has_active_job, pool_credit_cycle_usd, plan_id,
-            users_max
+            users_max, cotation
      FROM tenants WHERE id = $1`,
     [req.user.tenantId]
   );

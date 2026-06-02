@@ -35,6 +35,7 @@ import {
   deployWorkerForTenant,
   retryWorkerProvision,
 } from "../services/worker-deployment-service.js";
+import { listJobBillingCalls } from "../services/billing-call-service.js";
 
 export const adminRouter = Router();
 adminRouter.use(requirePlatformAdmin);
@@ -263,6 +264,23 @@ adminRouter.get("/tenants/:tenantId/users", async (req, res) => {
     res.json(await listTenantUsers(req.params.tenantId));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, code: e.code });
+  }
+});
+
+adminRouter.get("/tenants/:tenantId/jobs/:jobId/billing-calls", async (req, res) => {
+  try {
+    const { rows } = await query(
+      "SELECT id FROM jobs WHERE id = $1 AND tenant_id = $2",
+      [req.params.jobId, req.params.tenantId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Job não encontrado" });
+    const calls = await listJobBillingCalls(
+      req.params.tenantId,
+      req.params.jobId
+    );
+    res.json({ calls });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 

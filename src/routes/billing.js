@@ -1,6 +1,12 @@
 import { Router } from "express";
-import { query } from "../db/pool.js";
+import { isChargeConfirmed } from "../lib/charge-source.js";
+import {
+  billingCallDisplayAt,
+  mapCallStatusForUi,
+} from "../lib/billing-display.js";
 import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { listRecentBillingCalls } from "../services/billing-call-service.js";
+import { getProjectBillingSummary } from "../services/project-billing-service.js";
 import { listActiveJobsForTenant } from "../services/job-service.js";
 import { getTenantUserQuota } from "../services/user-service.js";
 import { listWorkersStatus } from "../services/worker-bot-service.js";
@@ -15,15 +21,8 @@ billingRouter.get("/summary", async (req, res) => {
   const used = Math.max(0, pool - balance);
   const pct = pool > 0 ? Math.round((used / pool) * 100) : 0;
 
-  const { rows: events } = await query(
-    `SELECT ue.execution_id, ue.job_id, ue.cost_base_usd, ue.charge_usd, ue.status,
-            ue.created_at, ue.executor_email
-     FROM usage_events ue
-     WHERE ue.tenant_id = $1
-     ORDER BY ue.created_at DESC
-     LIMIT 20`,
-    [req.user.tenantId]
-  );
+  const events = await listRecentBillingCalls(req.user.tenantId, 50);
+  const cotation = Number(t.cotation) || 5.1;
 
   const quota = await getTenantUserQuota(req.user.tenantId);
   const workersStatus = await listWorkersStatus(req.user.tenantId);
@@ -42,6 +41,7 @@ billingRouter.get("/summary", async (req, res) => {
 
   res.json({
     planId: t.plan_id,
+    cotation,
     balanceUsd: balance,
     poolCreditCycleUsd: pool,
     usedUsd: used,
@@ -51,9 +51,36 @@ billingRouter.get("/summary", async (req, res) => {
     usersMax: quota?.usersMax ?? t.users_max,
     usersUsed: quota?.usersUsed ?? 0,
     workerStatus: t.worker_status,
-    recentUsage: events,
+    recentUsage: events.map((ev) => ({
+      execution_id: ev.execution_id,
+      job_id: ev.job_id,
+      cost_base_usd: Number(ev.cost_base_usd) || 0,
+      charge_confirmed: isChargeConfirmed(ev.charge_source),
+      status: mapCallStatusForUi(ev.status),
+      created_at: billingCallDisplayAt(ev),
+      executor_email: ev.executor_email,
+      agent_name: ev.agent_name ?? null,
+    })),
     activeJobs,
     workersStatus: workersStatus.workers,
     slotsMax: workersStatus.slotsMax,
+  });
+});
+
+billingRouter.get("/projects/:slug", async (req, res) => {
+  const slug = String(req.params.slug || "").trim();
+  if (!slug) {
+    return res.status(400).json({ error: "slug obrigatório" });
+  }
+
+  const summary = await getProjectBillingSummary(req.user.tenantId, slug);
+  if (!summary) {
+    return res.status(404).json({ error: "Projeto não encontrado" });
+  }
+
+  const t = req.tenant;
+  res.json({
+    ...summary,
+    cotation: Number(t.cotation) || 5.1,
   });
 });

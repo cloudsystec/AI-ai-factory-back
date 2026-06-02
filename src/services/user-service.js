@@ -2,6 +2,10 @@ import { query } from "../db/pool.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { hashPassword } from "../lib/password.js";
 import { buildCapabilities } from "../lib/capabilities.js";
+import {
+  isPlatformAdminEmail,
+  sqlExcludePlatformAdminEmails,
+} from "../lib/platform-admin-emails.js";
 import { limitsForPlan } from "./tenant-service.js";
 
 const ROLES = new Set(["executor", "auditor", "viewer"]);
@@ -10,11 +14,13 @@ const ROLES = new Set(["executor", "auditor", "viewer"]);
  * @param {string} tenantId
  */
 export async function getTenantUserQuota(tenantId) {
+  const exclude = sqlExcludePlatformAdminEmails("u.email", 2);
   const { rows } = await query(
     `SELECT t.users_max, t.plan_id,
-            (SELECT COUNT(*)::int FROM users u WHERE u.tenant_id = t.id) AS users_used
+            (SELECT COUNT(*)::int FROM users u
+             WHERE u.tenant_id = t.id AND ${exclude.sql}) AS users_used
      FROM tenants t WHERE t.id = $1`,
-    [tenantId]
+    [tenantId, ...exclude.params]
   );
   if (!rows[0]) return null;
   return {
@@ -82,9 +88,10 @@ export async function listTenantUsers(tenantId) {
      FROM users WHERE tenant_id = $1 ORDER BY email`,
     [tenantId]
   );
+  const visible = rows.filter((row) => !isPlatformAdminEmail(row.email));
   return {
-    users: rows.map(userToPublic),
-    usersUsed: quota?.usersUsed ?? rows.length,
+    users: visible.map(userToPublic),
+    usersUsed: quota?.usersUsed ?? visible.length,
     usersMax: quota?.usersMax ?? 5,
     planId: quota?.planId,
   };

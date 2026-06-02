@@ -1,4 +1,10 @@
 import { requireAuth } from "./auth.js";
+import {
+  getPlatformAdminEmails,
+  isPlatformAdminEmail,
+} from "../lib/platform-admin-emails.js";
+
+export { isPlatformAdminEmail, getPlatformAdminEmails };
 
 /**
  * @param {import('express').Request} req
@@ -7,10 +13,7 @@ import { requireAuth } from "./auth.js";
  */
 export function requirePlatformAdmin(req, res, next) {
   requireAuth(req, res, () => {
-    const allow = (process.env.PLATFORM_ADMIN_EMAILS || "")
-      .split(",")
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean);
+    const allow = getPlatformAdminEmails();
     if (allow.length === 0 && process.env.ALLOW_DEV_ROUTES === "true") {
       return next();
     }

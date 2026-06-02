@@ -1,5 +1,5 @@
 import { query } from "../db/pool.js";
-import { encrypt } from "../lib/crypto.js";
+import { decrypt, encrypt } from "../lib/crypto.js";
 
 const PLAN_LIMITS = {
   starter: { pool: 500, slots: 1, users: 5 },
@@ -72,4 +72,20 @@ export async function setTenantCursorAdminKey(tenantId, cursorAdminApiKey) {
     "UPDATE tenants SET cursor_admin_api_key_encrypted = $2, updated_at = now() WHERE id = $1",
     [tenantId, enc]
   );
+}
+
+/**
+ * @param {string} tenantId
+ * @returns {Promise<string|null>}
+ */
+export async function getTenantCursorAdminApiKey(tenantId) {
+  const { rows } = await query(
+    "SELECT cursor_admin_api_key_encrypted FROM tenants WHERE id = $1",
+    [tenantId]
+  );
+  if (rows[0]?.cursor_admin_api_key_encrypted) {
+    return decrypt(rows[0].cursor_admin_api_key_encrypted);
+  }
+  const platform = String(process.env.PLATFORM_CURSOR_ADMIN_API_KEY || "").trim();
+  return platform || null;
 }

@@ -50,6 +50,14 @@ import {
   getActiveExecutionForSlot,
 } from "../services/execution-gate-service.js";
 import { ensureAllPendingGitProvisions } from "../services/git-provision-service.js";
+import {
+  registerAiCall,
+  settleAiCall,
+  endAiCall,
+  loadConsumedKeys,
+  reconcileJobCalls,
+  sumJobBillingCalls,
+} from "../services/billing-call-service.js";
 
 export const workerRouter = Router();
 workerRouter.use(requireWorker);
@@ -417,6 +425,7 @@ workerRouter.post("/jobs/:id/complete", async (req, res) => {
     status: req.body?.status || "succeeded",
     costBaseUsd: req.body?.costBaseUsd,
     exitCode: req.body?.exitCode,
+    chargeSource: req.body?.chargeSource,
   });
   broadcast(req.workerTenantId, {
     type: "job:status",
@@ -442,12 +451,102 @@ workerRouter.patch("/jobs/:id/billing", async (req, res) => {
   }
   const result = await updateJobBilling(req.workerTenantId, req.params.id, {
     costBaseUsd,
+    chargeSource: req.body?.chargeSource,
   });
   if (!result) {
     return res.status(404).json({ error: "Job não encontrado" });
   }
   broadcast(req.workerTenantId, { type: "billing" });
   res.json({ ok: true, billing: result });
+});
+
+workerRouter.post("/jobs/:id/billing/calls", async (req, res) => {
+  const { rows } = await query(
+    "SELECT tenant_id FROM jobs WHERE id = $1",
+    [req.params.id]
+  );
+  if (!rows[0] || rows[0].tenant_id !== req.workerTenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  const result = await registerAiCall(
+    req.workerTenantId,
+    req.params.id,
+    req.body || {}
+  );
+  res.json(result);
+});
+
+workerRouter.patch("/jobs/:id/billing/calls/:callId/end", async (req, res) => {
+  const { rows } = await query(
+    "SELECT tenant_id FROM jobs WHERE id = $1",
+    [req.params.id]
+  );
+  if (!rows[0] || rows[0].tenant_id !== req.workerTenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  const result = await endAiCall(req.workerTenantId, req.params.callId, req.body || {});
+  res.json(result);
+});
+
+workerRouter.patch("/jobs/:id/billing/calls/:callId", async (req, res) => {
+  const { rows } = await query(
+    "SELECT tenant_id FROM jobs WHERE id = $1",
+    [req.params.id]
+  );
+  if (!rows[0] || rows[0].tenant_id !== req.workerTenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  const result = await settleAiCall(
+    req.workerTenantId,
+    req.params.callId,
+    { ...(req.body || {}), jobId: req.params.id }
+  );
+  res.json(result);
+});
+
+workerRouter.get("/jobs/:id/billing/summary", async (req, res) => {
+  const { rows } = await query(
+    "SELECT tenant_id FROM jobs WHERE id = $1",
+    [req.params.id]
+  );
+  if (!rows[0] || rows[0].tenant_id !== req.workerTenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  const summary = await sumJobBillingCalls(
+    req.workerTenantId,
+    req.params.id
+  );
+  res.json(summary);
+});
+
+workerRouter.get("/billing/consumed-keys", async (req, res) => {
+  const botEmail = String(req.query.botEmail || "").trim();
+  const sinceMs = Number(req.query.sinceMs);
+  const untilMs = Number(req.query.untilMs);
+  if (!botEmail || !Number.isFinite(sinceMs) || !Number.isFinite(untilMs)) {
+    return res.status(400).json({ error: "botEmail, sinceMs e untilMs obrigatórios" });
+  }
+  const keys = await loadConsumedKeys(req.workerTenantId, botEmail, {
+    sinceMs,
+    untilMs,
+  });
+  res.json({ keys });
+});
+
+workerRouter.post("/jobs/:id/billing/reconcile", async (req, res) => {
+  const { rows } = await query(
+    "SELECT tenant_id FROM jobs WHERE id = $1",
+    [req.params.id]
+  );
+  if (!rows[0] || rows[0].tenant_id !== req.workerTenantId) {
+    return res.status(404).json({ error: "Job não encontrado" });
+  }
+  const result = await reconcileJobCalls(
+    req.workerTenantId,
+    req.params.id,
+    req.body || {}
+  );
+  res.json(result);
 });
 
 /**
