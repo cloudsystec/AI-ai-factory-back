@@ -71,3 +71,24 @@ export function approveTaskHumanValidation(tenantId, projectSlug, taskId) {
   writeTasksState(tenantId, projectSlug, state);
   return state[idx];
 }
+
+/**
+ * Incrementa contador de auto-retry para task bloqueada.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} taskId
+ */
+export function bumpAutoRetryForTask(tenantId, projectSlug, taskId) {
+  const state = readTasksState(tenantId, projectSlug);
+  const idx = state.findIndex((t) => t.id === taskId);
+  if (idx < 0) return null;
+  const prev = state[idx];
+  state[idx] = {
+    ...prev,
+    autoRetryCount: (Number(prev.autoRetryCount) || 0) + 1,
+    lastAutoRetryAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  writeTasksState(tenantId, projectSlug, state);
+  return state[idx];
+}

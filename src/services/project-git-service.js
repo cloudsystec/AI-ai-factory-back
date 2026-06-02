@@ -69,7 +69,8 @@ export async function getProjectGitRow(tenantId, slug) {
 export async function listProjectsWithGit(tenantId) {
   const { rows } = await query(
     `SELECT slug, name, github_default_branch, github_repo_full_name,
-            git_status, github_tech_lead_branch, created_at
+            git_status, github_tech_lead_branch, created_at,
+            status, completed_at
      FROM projects WHERE tenant_id = $1 ORDER BY slug`,
     [tenantId]
   );
@@ -81,6 +82,8 @@ export async function listProjectsWithGit(tenantId) {
     repoFullName: r.github_repo_full_name,
     gitStatus: r.git_status,
     createdAt: r.created_at,
+    status: r.status || "active",
+    completedAt: r.completed_at,
   }));
 }
 

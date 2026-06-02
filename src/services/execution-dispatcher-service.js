@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { query } from "../db/pool.js";
 import {
   checkMicroReadyForIntegrationQa,
+  getBlockedRetryableTasks,
+  buildAutoRetryPayload,
   getEligibleTodoTasks,
   getMicroWaveState,
   getNextMicroForTaskAnalysis,
   microHasUndeliveredTasks,
 } from "./micro-wave-service.js";
-import { readTasksState } from "./task-state-service.js";
+import { bumpAutoRetryForTask, readTasksState } from "./task-state-service.js";
 import { isLockFree } from "./work-lock-service.js";
 import { log } from "../lib/logger.js";
 import { getProjectGitRow } from "./project-git-service.js";
@@ -157,6 +159,11 @@ export async function getExecutionState(tenantId, projectSlug) {
  * @param {{ macroId?: string, workerSlots: number[], executorUserId?: string }} opts
  */
 export async function startContinuousExecution(tenantId, projectSlug, opts) {
+  const { assertProjectNotCompleted } = await import(
+    "./project-completion-service.js"
+  );
+  await assertProjectNotCompleted(tenantId, projectSlug);
+
   const slots = (opts.workerSlots || []).filter((n) => n >= 1);
   await query(
     `INSERT INTO tenant_execution (tenant_id, project_slug, continuous_active, pause_after_current,
@@ -179,10 +186,12 @@ export async function startContinuousExecution(tenantId, projectSlug, opts) {
   );
   const dispatched = await dispatchQueuedWork(tenantId, projectSlug);
   return {
-    continuousActive: true,
-    workerSlots: slots,
+    continuousActive: !dispatched.projectCompleted,
+    workerSlots: dispatched.projectCompleted ? [] : slots,
     enqueued: dispatched.enqueued,
     hint: dispatched.hint,
+    projectCompleted: dispatched.projectCompleted ?? false,
+    completedAt: dispatched.completedAt ?? null,
   };
 }
 
@@ -350,11 +359,80 @@ export async function addWorkersToExecution(tenantId, projectSlug, newSlots, exe
 
   const dispatched = await dispatchQueuedWork(tenantId, projectSlug);
   return {
-    continuousActive: true,
-    workerSlots: merged,
+    continuousActive: dispatched.projectCompleted ? false : true,
+    workerSlots: dispatched.projectCompleted ? [] : merged,
     enqueued: dispatched.enqueued,
     hint: dispatched.hint,
+    projectCompleted: dispatched.projectCompleted ?? false,
+    completedAt: dispatched.completedAt ?? null,
   };
+}
+
+/**
+ * Enfileira retry automático para tasks bloqueadas quando não há trabalho elegível.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ * @param {string} macroId
+ * @param {string|null} executorUserId
+ * @param {number} slotBudget
+ */
+async function tryEnqueueAutoRetryBlocked(
+  tenantId,
+  projectSlug,
+  microId,
+  macroId,
+  executorUserId,
+  slotBudget
+) {
+  if (slotBudget <= 0) return { enqueued: [], hint: null };
+
+  const blocked = getBlockedRetryableTasks(tenantId, projectSlug, microId);
+  const enqueued = [];
+
+  for (const { task, runtime } of blocked) {
+    if (enqueued.length >= slotBudget) break;
+    if (await hasActiveJob(tenantId, projectSlug, "task", task.id)) continue;
+
+    const taskLock = `${projectSlug}:${task.id}`;
+    if (!(await isLockFree(tenantId, "task", taskLock))) continue;
+
+    const payload = buildAutoRetryPayload(runtime);
+    const id = randomUUID();
+    await query(
+      `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, task_id, status, payload, requested_by_user_id)
+       VALUES ($1, $2, $3, 'task', $4, $5, 'queued', $6::jsonb, $7)`,
+      [
+        id,
+        tenantId,
+        projectSlug,
+        macroId,
+        task.id,
+        JSON.stringify(payload),
+        executorUserId,
+      ]
+    );
+    bumpAutoRetryForTask(tenantId, projectSlug, task.id);
+    enqueued.push({
+      jobId: id,
+      kind: "task",
+      taskId: task.id,
+      autoRetry: true,
+      retryMode: payload.retryMode,
+    });
+    log.info("Auto-retry task bloqueada", {
+      project: projectSlug,
+      taskId: task.id,
+      jobId: id,
+      retryMode: payload.retryMode,
+      blockReason: runtime?.blockReason || "—",
+    });
+  }
+
+  if (enqueued.length > 0) {
+    return { enqueued, hint: null };
+  }
+  return { enqueued: [], hint: null };
 }
 
 /**
@@ -363,6 +441,59 @@ export async function addWorkersToExecution(tenantId, projectSlug, newSlots, exe
  * @param {string} projectSlug
  */
 export async function dispatchQueuedWork(tenantId, projectSlug) {
+  const result = await dispatchQueuedWorkInternal(tenantId, projectSlug);
+  return finalizeDispatchIfIdleComplete(tenantId, projectSlug, result);
+}
+
+/**
+ * Se o dispatch não enfileirou nada e o projecto está 100% concluído, finaliza-o.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {{ enqueued?: object[], hint?: string|null, projectCompleted?: boolean }} result
+ */
+async function finalizeDispatchIfIdleComplete(tenantId, projectSlug, result) {
+  if (result.projectCompleted) return result;
+  if (Array.isArray(result.enqueued) && result.enqueued.length > 0) return result;
+
+  const { rows } = await query(
+    `SELECT 1 FROM jobs WHERE tenant_id = $1 AND project_slug = $2
+       AND status IN ('queued', 'running', 'waiting_input')
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  if (rows.length > 0) return result;
+
+  const { tryCompleteProjectFromLiveState } = await import(
+    "./project-completion-service.js"
+  );
+  const completion = await tryCompleteProjectFromLiveState(tenantId, projectSlug);
+  if (!completion.completed) return result;
+
+  return {
+    enqueued: [],
+    hint: "Projeto finalizado — todas as micros e tasks concluídas.",
+    projectCompleted: true,
+    completedAt: completion.completedAt ?? null,
+  };
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
+  try {
+    const { assertProjectNotCompleted } = await import(
+      "./project-completion-service.js"
+    );
+    await assertProjectNotCompleted(tenantId, projectSlug);
+  } catch (e) {
+    if (e.code === "project_completed") {
+      return { enqueued: [], hint: "Projeto finalizado." };
+    }
+    throw e;
+  }
+
   // Limpar jobs "running" presos há mais de 10 minutos (stale)
   await query(
     `UPDATE jobs SET status = 'failed', finished_at = now()
@@ -527,6 +658,21 @@ export async function dispatchQueuedWork(tenantId, projectSlug) {
         enqueued: [],
         hint: hintBusy,
       };
+    }
+
+    const runningTasks = await countRunningTaskJobs(tenantId, projectSlug);
+    const queuedTasks = await countQueuedTaskJobs(tenantId, projectSlug);
+    const retryBudget = taskDispatchBudget(slots.length, runningTasks, queuedTasks);
+    const autoRetry = await tryEnqueueAutoRetryBlocked(
+      tenantId,
+      projectSlug,
+      openId,
+      macroId,
+      executorUserId,
+      retryBudget
+    );
+    if (autoRetry.enqueued.length > 0) {
+      return autoRetry;
     }
 
     /** Micro concluído: todas as tasks done → QA de integração na tech-lead. */

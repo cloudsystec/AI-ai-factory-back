@@ -154,6 +154,67 @@ export function getEligibleTodoTasks(tenantId, projectSlug, microId) {
   return { eligible, backlog, stateByTaskId, microTasks };
 }
 
+function taskAutoRetryMax() {
+  const raw = Number(process.env.TASK_AUTO_RETRY_MAX);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 3;
+}
+
+function taskAutoRetryCooldownMs() {
+  const raw = Number(process.env.TASK_AUTO_RETRY_COOLDOWN_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 60_000;
+}
+
+/**
+ * Tasks bloqueadas elegíveis para retry automático no micro aberto.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ */
+export function getBlockedRetryableTasks(tenantId, projectSlug, microId) {
+  const backlog = readBacklogTasks(tenantId, projectSlug);
+  const tasksState = readTasksState(tenantId, projectSlug);
+  const stateByTaskId = new Map(tasksState.map((t) => [t.id, t]));
+  const tasks = backlog.filter((t) => t.sourceMicroId === microId);
+  const maxRetries = taskAutoRetryMax();
+  const cooldownMs = taskAutoRetryCooldownMs();
+  const now = Date.now();
+
+  return tasks
+    .filter((t) => {
+      const rt = stateByTaskId.get(t.id);
+      if (!rt || rt.status !== "blocked") return false;
+      const count = Number(rt.autoRetryCount) || 0;
+      if (count >= maxRetries) return false;
+      const last = rt.lastAutoRetryAt ? new Date(rt.lastAutoRetryAt).getTime() : 0;
+      if (last > 0 && now - last < cooldownMs) return false;
+      return true;
+    })
+    .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+    .map((t) => ({ task: t, runtime: stateByTaskId.get(t.id) }));
+}
+
+/**
+ * Payload de retry (espelha handleRetryTask no front).
+ * @param {object} runtime
+ */
+export function buildAutoRetryPayload(runtime) {
+  const reason = runtime?.blockReason || null;
+  const failed = runtime?.failedStep || null;
+  const lastStep = runtime?.lastCompletedStep || null;
+  /** @type {Record<string, string|boolean>} */
+  const payload = { autoRetry: true };
+
+  if (reason === "infra" && failed) {
+    payload.retryMode = "infra";
+    payload.failedStep = failed;
+    if (lastStep) payload.retryFromStep = lastStep;
+  } else {
+    payload.retryMode = "agent";
+    if (lastStep) payload.retryFromStep = lastStep;
+  }
+  return payload;
+}
+
 /**
  * Vista detalhada das tasks do micro aberto (dependências + elegibilidade para dispatch).
  * @param {string} tenantId

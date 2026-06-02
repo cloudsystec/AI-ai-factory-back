@@ -125,6 +125,10 @@ export async function queueJob(tenantId, body, opts = {}) {
   }
 
   if (kind !== "provision") {
+    const { assertProjectNotCompleted } = await import(
+      "./project-completion-service.js"
+    );
+    await assertProjectNotCompleted(tenantId, body.project);
     await assertProjectGitReady(tenantId, body.project);
     await assertMicroWaveAllowsJob(tenantId, body.project, {
       kind,

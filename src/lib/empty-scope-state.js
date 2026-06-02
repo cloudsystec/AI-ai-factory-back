@@ -34,6 +34,8 @@ export function emptyScopeState(project) {
     ],
     devPipelineActive: false,
     wavesCompleteScenario: false,
+    projectCompleted: false,
+    allTasksSuccessful: false,
     micros: [],
   };
 }

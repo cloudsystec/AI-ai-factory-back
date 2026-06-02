@@ -156,19 +156,64 @@ function enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, state) {
 }
 
 /**
+ * @param {object} scopeState
+ * @param {{ status?: string, completed_at?: Date|null }} projectRow
+ */
+function enrichScopeWithProjectStatus(scopeState, projectRow) {
+  const completed = projectRow?.status === "completed";
+  return {
+    ...scopeState,
+    projectCompleted: completed,
+    projectStatus: projectRow?.status || "active",
+    projectCompletedAt: projectRow?.completed_at || null,
+  };
+}
+
+async function loadProjectRowForScope(tenantId, projectSlug) {
+  const { getProjectStatus } = await import("./project-completion-service.js");
+  return getProjectStatus(tenantId, projectSlug);
+}
+
+/**
  * @param {string} tenantId
  * @param {string} projectSlug
  * @param {{ source?: string }} [opts]
  */
 export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}) {
+  let projectRow = await loadProjectRowForScope(tenantId, projectSlug);
+
+  if (projectRow.status !== "completed") {
+    try {
+      const { tryCompleteProjectFromLiveState } = await import(
+        "./project-completion-service.js"
+      );
+      const completion = await tryCompleteProjectFromLiveState(
+        tenantId,
+        projectSlug
+      );
+      if (completion.completed) {
+        projectRow = await loadProjectRowForScope(tenantId, projectSlug);
+      }
+    } catch (e) {
+      const { log } = await import("../lib/logger.js");
+      log.warn("Auto-finalização ao carregar scope", {
+        project: projectSlug,
+        error: e.message,
+      });
+    }
+  }
+
   if (opts.source === "db") {
     const state = await getScopeStateSnapshot(tenantId, projectSlug);
     const meta = await buildDashboardMeta(tenantId, projectSlug, false);
     return state
-      ? enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
-          ...state,
-          dashboardMeta: meta,
-        })
+      ? enrichScopeWithProjectStatus(
+          enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+            ...state,
+            dashboardMeta: meta,
+          }),
+          projectRow
+        )
       : null;
   }
 
@@ -184,19 +229,25 @@ export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}
         live.scopeState
       );
     }
-    return enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
-      ...live.scopeState,
-      dashboardMeta: meta,
-    });
+    return enrichScopeWithProjectStatus(
+      enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+        ...live.scopeState,
+        dashboardMeta: meta,
+      }),
+      projectRow
+    );
   }
 
   const state = await getScopeStateSnapshot(tenantId, projectSlug);
   const meta = await buildDashboardMeta(tenantId, projectSlug, false);
   return state
-    ? enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
-        ...state,
-        dashboardMeta: meta,
-      })
+    ? enrichScopeWithProjectStatus(
+        enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+          ...state,
+          dashboardMeta: meta,
+        }),
+        projectRow
+      )
     : null;
 }
 
@@ -249,6 +300,24 @@ export async function upsertDashboardSnapshot(tenantId, projectSlug, tasks, scop
     await computeAndStorePlannedCost(tenantId, projectSlug, {
       microCount,
       taskCount: taskList.length,
+    });
+  }
+
+  try {
+    const { maybeCompleteProjectFromSnapshot } = await import(
+      "./project-completion-service.js"
+    );
+    await maybeCompleteProjectFromSnapshot(
+      tenantId,
+      projectSlug,
+      scopeState,
+      Array.isArray(tasks) ? tasks : []
+    );
+  } catch (e) {
+    const { log } = await import("../lib/logger.js");
+    log.warn("Detecção finalização projecto", {
+      project: projectSlug,
+      error: e.message,
     });
   }
 }

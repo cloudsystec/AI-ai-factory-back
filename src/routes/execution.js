@@ -60,9 +60,9 @@ executionRouter.post(
     broadcast(req.user.tenantId, {
       type: "execution",
       project: projectSlug,
-      continuousActive: true,
+      continuousActive: result.projectCompleted ? false : true,
       pauseAfterCurrent: false,
-      selectedWorkerSlots: slots,
+      selectedWorkerSlots: result.projectCompleted ? [] : slots,
     });
     broadcastWorkersAndJobs(
       req.user.tenantId,
@@ -156,9 +156,9 @@ executionRouter.post(
       broadcast(req.user.tenantId, {
         type: "execution",
         project: projectSlug,
-        continuousActive: true,
+        continuousActive: result.projectCompleted ? false : true,
         pauseAfterCurrent: false,
-        selectedWorkerSlots: slots,
+        selectedWorkerSlots: result.projectCompleted ? [] : slots,
         action: "play-all",
       });
       broadcastWorkersAndJobs(
@@ -195,9 +195,9 @@ executionRouter.post(
       broadcast(req.user.tenantId, {
         type: "execution",
         project: projectSlug,
-        continuousActive: true,
+        continuousActive: result.projectCompleted ? false : true,
         pauseAfterCurrent: false,
-        selectedWorkerSlots: slots,
+        selectedWorkerSlots: result.projectCompleted ? [] : slots,
         workerSlot,
         action: "start",
       });
