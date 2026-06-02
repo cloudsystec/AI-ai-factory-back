@@ -99,9 +99,6 @@ async function boot() {
       ws: "/ws",
       color: process.env.AI_FACTORY_LOG_COLOR !== "0",
     });
-    log.info(
-      "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
-    );
   } catch (err) {
     log.error("Boot falhou", {
       error: err instanceof Error ? err.message : String(err),
