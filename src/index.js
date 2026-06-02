@@ -72,16 +72,17 @@ const API_BUILD = "git-pr-v2";
 
 const server = createServer(app);
 
-initWsHub(server).then(() => {
-  server.listen(PORT, () => {
-    log.info("AI Factory API online", {
-      url: `http://localhost:${PORT}`,
-      build: API_BUILD,
-      ws: "/ws",
-      color: process.env.AI_FACTORY_LOG_COLOR !== "0",
-    });
-    log.info(
-      "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
-    );
+server.listen(PORT, () => {
+  log.info("AI Factory API online", {
+    url: `http://localhost:${PORT}`,
+    build: API_BUILD,
+    ws: "/ws",
+    color: process.env.AI_FACTORY_LOG_COLOR !== "0",
+  });
+  log.info(
+    "Billing poller em processo separado — use ai-factory-poller (npm run dev)"
+  );
+  initWsHub(server).catch((err) => {
+    log.warn("WebSocket hub init failed", { error: err.message });
   });
 });
