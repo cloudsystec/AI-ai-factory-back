@@ -1,4 +1,5 @@
 import { query } from "../db/pool.js";
+import { toPublicProjectGit, isManagedGitRepoMode } from "../lib/project-git-public.js";
 import {
   listRepoBranches,
   getRepoDefaultBranch,
@@ -56,7 +57,7 @@ export async function getProjectGitRow(tenantId, slug) {
   const { rows } = await query(
     `SELECT slug, name, scope_md, github_repo_full_name, github_default_branch,
             github_tech_lead_branch, github_repo_mode, git_status, git_last_error,
-            created_at
+            github_installation_id, status, completed_at, created_at
      FROM projects WHERE tenant_id = $1 AND slug = $2`,
     [tenantId, slug]
   );
@@ -68,23 +69,13 @@ export async function getProjectGitRow(tenantId, slug) {
  */
 export async function listProjectsWithGit(tenantId) {
   const { rows } = await query(
-    `SELECT slug, name, github_default_branch, github_repo_full_name,
-            git_status, github_tech_lead_branch, created_at,
-            status, completed_at
+    `SELECT slug, name, scope_md, github_default_branch, github_repo_full_name,
+            git_status, github_tech_lead_branch, github_repo_mode, git_last_error,
+            created_at, status, completed_at
      FROM projects WHERE tenant_id = $1 ORDER BY slug`,
     [tenantId]
   );
-  return rows.map((r) => ({
-    slug: r.slug,
-    name: r.name,
-    defaultBranch: r.github_default_branch,
-    techLeadBranch: r.github_tech_lead_branch,
-    repoFullName: r.github_repo_full_name,
-    gitStatus: r.git_status,
-    createdAt: r.created_at,
-    status: r.status || "active",
-    completedAt: r.completed_at,
-  }));
+  return rows.map((r) => toPublicProjectGit(r));
 }
 
 /**
@@ -95,11 +86,29 @@ export async function listProjectsWithGit(tenantId) {
  */
 export async function setProjectGitStatus(tenantId, slug, status, error = null) {
   await query(
-    `UPDATE projects SET git_status = $3, git_last_error = $4
+    `UPDATE projects SET git_status = $3, git_last_error = $4, updated_at = now()
      WHERE tenant_id = $1 AND slug = $2`,
     [tenantId, slug, status, error]
   );
 }
+
+/**
+ * @param {string} tenantId
+ * @param {string} slug
+ */
+export async function getProjectInstallationId(tenantId, slug) {
+  const row = await getProjectGitRow(tenantId, slug);
+  if (row?.github_installation_id) {
+    return row.github_installation_id;
+  }
+  const { rows } = await query(
+    `SELECT github_installation_id FROM tenants WHERE id = $1`,
+    [tenantId]
+  );
+  return rows[0]?.github_installation_id || null;
+}
+
+export { isManagedGitRepoMode };
 
 /**
  * @param {string} tenantId

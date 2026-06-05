@@ -52,6 +52,9 @@ import {
 
 import { approveTaskHumanValidation } from "../services/task-state-service.js";
 import { assertProjectCreationReady } from "../services/macro-help-service.js";
+import { toPublicProjectGit, isManagedGitRepoMode } from "../lib/project-git-public.js";
+import { exportProjectCodeZip } from "../services/project-export-service.js";
+import { startGitMigration } from "../services/git-migrate-service.js";
 
 
 
@@ -336,13 +339,19 @@ projectsRouter.post("/:slug/connect-git", requireCapability("write"), async (req
   }
 
   const { rows: projRows } = await query(
-    "SELECT git_status FROM projects WHERE tenant_id = $1 AND slug = $2",
+    "SELECT git_status, github_repo_mode FROM projects WHERE tenant_id = $1 AND slug = $2",
     [req.user.tenantId, slug]
   );
   if (!projRows[0]) {
     return res.status(404).json({ error: "Projeto não encontrado." });
   }
   if (projRows[0].git_status && projRows[0].git_status !== "not_connected") {
+    if (projRows[0].github_repo_mode === "managed") {
+      return res.status(409).json({
+        error: "Use migrar GitHub para projectos em modo gerenciado.",
+        code: "use_migrate_git",
+      });
+    }
     return res.status(409).json({ error: "Git já conectado neste projeto." });
   }
 
@@ -430,6 +439,63 @@ projectsRouter.post("/:slug/connect-git", requireCapability("write"), async (req
 
 
 
+projectsRouter.post("/:slug/migrate-git", requireCapability("write"), async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const result = await startGitMigration(req.user.tenantId, slug, req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+
+
+projectsRouter.get("/:slug/download-code", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  let cleanup = () => {};
+  try {
+    const { zipPath, fileName, cleanup: fn } = await exportProjectCodeZip(
+      req.user.tenantId,
+      slug
+    );
+    cleanup = fn;
+    await new Promise((resolve, reject) => {
+      res.download(
+        zipPath,
+        fileName,
+        {
+          headers: { "Content-Type": "application/zip" },
+        },
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(error.status || 500).json({
+        error: error.message || String(error),
+        code: error.code,
+      });
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+
+
 /** Rotas com segmentos fixos antes de /:slug (Express 5). */
 
 projectsRouter.get("/:slug/pull-requests", async (req, res) => {
@@ -440,6 +506,14 @@ projectsRouter.get("/:slug/pull-requests", async (req, res) => {
 
     return res.status(400).json({ error: "Slug inválido" });
 
+  }
+
+  const row = await getProjectGitRow(req.user.tenantId, slug);
+
+  if (!row) return res.status(404).json({ error: "Projeto não encontrado" });
+
+  if (isManagedGitRepoMode(row.github_repo_mode)) {
+    return res.json([]);
   }
 
   const prs = await listTaskPullRequests(req.user.tenantId, slug);
@@ -634,27 +708,7 @@ projectsRouter.get("/:slug", async (req, res) => {
 
   if (!row) return res.status(404).json({ error: "Projeto não encontrado" });
 
-  res.json({
-
-    slug: row.slug,
-
-    name: row.name,
-
-    scopeMd: row.scope_md,
-
-    defaultBranch: row.github_default_branch,
-
-    techLeadBranch: row.github_tech_lead_branch,
-
-    repoFullName: row.github_repo_full_name,
-
-    gitStatus: row.git_status,
-
-    gitLastError: row.git_last_error,
-
-    repoMode: row.github_repo_mode,
-
-  });
+  res.json(toPublicProjectGit(row));
 
 });
 

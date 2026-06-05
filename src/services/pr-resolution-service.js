@@ -1,5 +1,5 @@
 import { getPool } from "../db/pool.js";
-import { getGitHubTokenForTenant } from "./job-service.js";
+import { getGitHubTokenForProject } from "./job-service.js";
 import { getPullRequest } from "./github-app-service.js";
 import { updateTaskPrTlReview } from "./task-pr-service.js";
 import { dispatchQueuedWork } from "./execution-dispatcher-service.js";
@@ -17,7 +17,8 @@ async function pickStuckPrRow(client, tenantId, projectSlugs) {
     `SELECT t.task_id, t.project_slug, t.pr_number, t.pr_url, t.head_branch, t.base_branch,
             t.tl_review_status, t.job_id,
             p.github_repo_full_name, p.github_tech_lead_branch, p.git_status,
-            tn.github_installation_id
+            p.github_installation_id, p.github_repo_mode,
+            tn.github_installation_id AS tenant_installation_id
      FROM task_pull_requests t
      INNER JOIN projects p
        ON p.tenant_id = t.tenant_id AND p.slug = t.project_slug
@@ -28,7 +29,8 @@ async function pickStuckPrRow(client, tenantId, projectSlugs) {
        AND t.pr_number IS NOT NULL
        AND p.github_repo_full_name IS NOT NULL
        AND p.git_status = 'ready'
-       AND tn.github_installation_id IS NOT NULL
+       AND p.github_repo_mode IN ('client', 'existing', 'created')
+       AND COALESCE(p.github_installation_id, tn.github_installation_id) IS NOT NULL
        AND (
          t.tl_review_status IN ('pending', 'conflict')
          OR (
@@ -79,13 +81,15 @@ export async function claimPrResolutionForWorker(tenantId, workerSlot) {
       client.release();
     }
 
-    const token = await getGitHubTokenForTenant(tenantId);
+    const token = await getGitHubTokenForProject(tenantId, row.project_slug);
+    const installationId =
+      row.github_installation_id || row.tenant_installation_id;
     const [owner, repo] = String(row.github_repo_full_name).split("/");
     let skip = false;
 
     try {
       const ghPr = await getPullRequest(
-        row.github_installation_id,
+        installationId,
         owner,
         repo,
         row.pr_number

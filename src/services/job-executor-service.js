@@ -35,7 +35,7 @@ export async function resolveJobExecutorUserId(tenantId, job) {
  * @param {number} workerSlot
  */
 export async function resolveCursorApiKeyForJob(tenantId, job, workerSlot) {
-  if (job.kind === "provision" || !CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
+  if (job.kind === "provision" || job.kind === "git-migrate" || !CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
     return null;
   }
   if (!(await isBotReady(tenantId, workerSlot))) {

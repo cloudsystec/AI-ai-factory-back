@@ -11,7 +11,7 @@ import {
   appendJobLog,
   claimJob,
   completeJob,
-  getGitHubTokenForTenant,
+  getGitHubTokenForProject,
   updateJobBilling,
 } from "../services/job-service.js";
 import { getProjectGitRow } from "../services/project-git-service.js";
@@ -148,7 +148,10 @@ workerRouter.post("/claim", async (req, res) => {
 
   let githubInstallationToken = null;
   try {
-    githubInstallationToken = await getGitHubTokenForTenant(req.workerTenantId);
+    githubInstallationToken = await getGitHubTokenForProject(
+      req.workerTenantId,
+      job.project_slug
+    );
   } catch {
     githubInstallationToken = null;
   }
@@ -221,6 +224,34 @@ workerRouter.post("/projects/:slug/git/provision-complete", async (req, res) => 
     type: "dashboard",
     project: slug,
     reason: "git-provision",
+  });
+  res.json({ ok: true });
+});
+
+workerRouter.post("/projects/:slug/git/migrate-complete", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  const { status, error } = req.body ?? {};
+  if (status === "ready") {
+    await setProjectGitStatus(req.workerTenantId, slug, "ready");
+    await query(
+      `UPDATE projects SET github_migrated_at = now(), updated_at = now()
+       WHERE tenant_id = $1 AND slug = $2`,
+      [req.workerTenantId, slug]
+    );
+  } else {
+    await setProjectGitStatus(
+      req.workerTenantId,
+      slug,
+      "failed",
+      error || "migrate failed"
+    );
+  }
+  broadcast(req.workerTenantId, { type: "billing" });
+  broadcast(req.workerTenantId, {
+    type: "dashboard",
+    project: slug,
+    reason: "git-migrate",
   });
   res.json({ ok: true });
 });

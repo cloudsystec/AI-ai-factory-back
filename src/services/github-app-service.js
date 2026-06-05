@@ -1,6 +1,6 @@
 import { Octokit } from "@octokit/rest";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import jwt from "jsonwebtoken";
@@ -294,26 +294,9 @@ export async function getRepoDefaultBranch(installationId, owner, repo) {
 }
 
 /**
- * @param {bigint|number} installationId
- * @param {{ name: string, private?: boolean, description?: string }} opts
+ * @param {{ full_name?: string, default_branch?: string }} data
  */
-export async function createRepository(installationId, opts) {
-  const octokit = await getInstallationOctokit(installationId);
-  const { data } = await octokit.repos.createInOrg({
-    org: await resolveInstallationAccountLogin(installationId),
-    name: opts.name,
-    private: opts.private !== false,
-    description: opts.description || "AI Factory project",
-    auto_init: true,
-  }).catch(async () => {
-    const { data: userRepo } = await octokit.repos.createForAuthenticatedUser({
-      name: opts.name,
-      private: opts.private !== false,
-      description: opts.description || "AI Factory project",
-      auto_init: true,
-    });
-    return { data: userRepo };
-  });
+function mapRepositoryResult(data) {
   return {
     fullName: data.full_name,
     defaultBranch: data.default_branch || "main",
@@ -322,14 +305,81 @@ export async function createRepository(installationId, opts) {
 
 /**
  * @param {bigint|number} installationId
+ * @param {string} owner
+ * @param {string} repo
  */
-export async function resolveInstallationAccountLogin(installationId) {
+export async function getRepository(installationId, owner, repo) {
+  const octokit = await getInstallationOctokit(installationId);
+  const { data } = await octokit.repos.get({ owner, repo });
+  return mapRepositoryResult(data);
+}
+
+/**
+ * @param {bigint|number} installationId
+ * @param {{ name: string, private?: boolean, description?: string }} opts
+ */
+export async function createRepository(installationId, opts) {
+  const octokit = await getInstallationOctokit(installationId);
+  const account = await resolveInstallationAccount(installationId);
+  if (!account.login) {
+    throw Object.assign(new Error("Installation sem account login."), {
+      status: 503,
+      code: "github_installation_invalid",
+    });
+  }
+  if (account.type !== "Organization") {
+    throw Object.assign(
+      new Error(
+        "Criação de repositório via GitHub App requer instalação numa organização."
+      ),
+      { status: 422, code: "github_org_required_for_create" }
+    );
+  }
+
+  const payload = {
+    org: account.login,
+    name: opts.name,
+    private: opts.private !== false,
+    description: opts.description || "AI Factory project",
+    auto_init: true,
+  };
+
+  try {
+    const { data } = await octokit.repos.createInOrg(payload);
+    return mapRepositoryResult(data);
+  } catch (e) {
+    if (e.status !== 422) throw e;
+    try {
+      return await getRepository(installationId, account.login, opts.name);
+    } catch (getErr) {
+      if (getErr.status === 404) throw e;
+      throw getErr;
+    }
+  }
+}
+
+/**
+ * @param {bigint|number} installationId
+ * @returns {Promise<{ login: string, type: string }>}
+ */
+export async function resolveInstallationAccount(installationId) {
   const appJwt = createAppJwt();
   const data = await githubAppFetch(
     `/app/installations/${Number(installationId)}`,
     { token: appJwt }
   );
-  return data.account?.login || "";
+  return {
+    login: data.account?.login || "",
+    type: data.account?.type || "",
+  };
+}
+
+/**
+ * @param {bigint|number} installationId
+ */
+export async function resolveInstallationAccountLogin(installationId) {
+  const account = await resolveInstallationAccount(installationId);
+  return account.login;
 }
 
 /**
@@ -417,6 +467,48 @@ export function parseRepoFullName(fullName) {
   const parts = String(fullName || "").split("/");
   if (parts.length !== 2) return null;
   return { owner: parts[0], repo: parts[1] };
+}
+
+/**
+ * Descarrega zipball do GitHub (branch/ref) para ficheiro local.
+ * @param {bigint|number|string} installationId
+ * @param {string} repoFullName owner/repo
+ * @param {string} ref branch ou tag
+ * @param {string} destPath
+ */
+export async function downloadRepoZipballToFile(
+  installationId,
+  repoFullName,
+  ref,
+  destPath
+) {
+  const parsed = parseRepoFullName(repoFullName);
+  if (!parsed) {
+    throw Object.assign(new Error("repoFullName inválido"), { status: 400 });
+  }
+  const branch = String(ref || "main").trim() || "main";
+  const { token } = await getInstallationAccessToken(installationId);
+  const url = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/zipball/${encodeURIComponent(branch)}`;
+  const res = await fetch(url, {
+    headers: githubApiHeaders(token),
+    redirect: "follow",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw Object.assign(
+      new Error(data.message || `GitHub zipball ${res.status}`),
+      { status: res.status === 404 ? 404 : 502, code: "github_zipball_failed" }
+    );
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 22) {
+    throw Object.assign(new Error("Zipball GitHub vazio"), {
+      status: 502,
+      code: "github_zipball_empty",
+    });
+  }
+  mkdirSync(path.dirname(destPath), { recursive: true });
+  writeFileSync(destPath, buf);
 }
 
 /**

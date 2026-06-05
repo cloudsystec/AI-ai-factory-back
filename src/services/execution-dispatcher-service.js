@@ -88,7 +88,7 @@ export async function reconcileTenantSlotsInUse(tenantId) {
 async function hasActiveSerialJob(tenantId, projectSlug) {
   const { rows } = await query(
     `SELECT 1 FROM jobs WHERE tenant_id = $1 AND project_slug = $2
-       AND kind IN ('scope', 'scope-tasks-only', 'provision')
+       AND kind IN ('scope', 'scope-tasks-only', 'provision', 'git-migrate')
        AND status IN ('queued', 'running', 'waiting_input')
      LIMIT 1`,
     [tenantId, projectSlug]
@@ -535,6 +535,36 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
 
   const gitRow = await getProjectGitRow(tenantId, projectSlug);
   if (gitRow && gitRow.git_status !== "ready") {
+    if (gitRow.git_status === "not_connected") {
+      const { ensureManagedGitRepository } = await import(
+        "./managed-git-service.js"
+      );
+      try {
+        await ensureManagedGitRepository(tenantId, projectSlug);
+      } catch (e) {
+        log.error("Falha ao criar repo managed", {
+          project: projectSlug,
+          error: e.message,
+        });
+        return {
+          enqueued: [],
+          hint: e.message || "Não foi possível preparar o workspace.",
+        };
+      }
+    }
+
+    if (gitRow.git_status === "migrating") {
+      const { ensureGitMigrateJob } = await import("./git-migrate-service.js");
+      const mig = await ensureGitMigrateJob(tenantId, projectSlug);
+      if (mig?.jobId) {
+        return {
+          enqueued: [{ jobId: mig.jobId, kind: "git-migrate" }],
+          hint: null,
+        };
+      }
+      return { enqueued: [], hint: "A migrar repositório…" };
+    }
+
     const { ensureGitProvisionJob } = await import("./git-provision-service.js");
     const prov = await ensureGitProvisionJob(tenantId, projectSlug);
     if (prov?.jobId) {
@@ -543,7 +573,7 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
         hint: null,
       };
     }
-    return { enqueued: [], hint: "Aguardando provisionamento Git do projecto." };
+    return { enqueued: [], hint: "A preparar workspace…" };
   }
 
   const wave = await getMicroWaveState(tenantId, projectSlug);

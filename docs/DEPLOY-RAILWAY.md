@@ -52,6 +52,8 @@ O poller **não** corre na API.
 | `JWT_SECRET` | ✓ | — |
 | `CORS_ORIGIN` | ✓ | — |
 | `WORKER_SECRET` | ✓ | — |
+| `GITHUB_PLATFORM_INSTALLATION_ID` | ✓ | — |
+| `GITHUB_MANAGED_REPO_PREFIX` | ✓ (opcional, default `df`) | — |
 | `BILLING_CURSOR_POLL_INTERVAL_MS` | — | ✓ |
 | `BILLING_MAX_MATCH_DELTA_MS` | — | ✓ |
 

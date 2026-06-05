@@ -64,10 +64,10 @@ export async function ensureGitProvisionJob(tenantId, projectSlug) {
     ]
   );
 
-  if (status === "pending") {
+  if (status === "pending" || status === "migrating") {
     await query(
       `UPDATE projects SET git_status = 'provisioning', updated_at = now()
-       WHERE tenant_id = $1 AND slug = $2 AND git_status = 'pending'`,
+       WHERE tenant_id = $1 AND slug = $2 AND git_status IN ('pending', 'migrating')`,
       [tenantId, projectSlug]
     );
   }
@@ -86,7 +86,7 @@ export async function ensureAllPendingGitProvisions(tenantId) {
   const { rows } = await query(
     `SELECT slug FROM projects
      WHERE tenant_id = $1
-       AND git_status IN ('pending', 'provisioning')
+       AND git_status IN ('pending', 'provisioning', 'migrating')
        AND github_repo_full_name IS NOT NULL`,
     [tenantId]
   );

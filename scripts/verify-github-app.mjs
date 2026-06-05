@@ -1,18 +1,26 @@
 /**
  * Valida GitHub App com o mesmo fluxo do Postman:
  * JWT → GET /app/installations → POST access_tokens → GET /installation/repositories
+ * Usa GITHUB_PLATFORM_INSTALLATION_ID quando definido (repos managed).
  * Uso: npm run verify:github-app
+ * Teste opcional de createInOrg: GITHUB_VERIFY_CREATE_REPO=1 npm run verify:github-app
  */
 import "dotenv/config";
 import {
   createAppJwt,
+  createRepository,
   githubAppFetch,
+  getInstallationOctokit,
   loadPrivateKeyPem,
   listAppInstallations,
   getInstallationAccessToken,
+  resolveInstallationAccount,
 } from "../src/services/github-app-service.js";
 
 const appId = Number(process.env.GITHUB_APP_ID || 0);
+const platformInstallationId = String(
+  process.env.GITHUB_PLATFORM_INSTALLATION_ID || ""
+).trim();
 const testInstallationId = process.env.GITHUB_TEST_INSTALLATION_ID?.trim();
 
 if (!appId) {
@@ -24,7 +32,6 @@ try {
   const pem = loadPrivateKeyPem({ required: true });
   console.log("PEM carregado, appId=", appId);
 
-  const appJwt = createAppJwt();
   const installations = await listAppInstallations();
   console.log(
     "OK — GET /app/installations:",
@@ -36,16 +43,36 @@ try {
       "  - id=",
       inst.id,
       "account=",
-      inst.account?.login || "?"
+      inst.account?.login || "?",
+      "type=",
+      inst.account?.type || "?"
     );
   }
 
   const installationId =
+    platformInstallationId ||
     testInstallationId ||
     (installations[0]?.id != null ? String(installations[0].id) : "");
   if (!installationId) {
     console.error("Nenhuma instalação encontrada. Instale a app no GitHub primeiro.");
     process.exit(1);
+  }
+
+  if (platformInstallationId) {
+    console.log("Usando GITHUB_PLATFORM_INSTALLATION_ID=", installationId);
+  }
+
+  const account = await resolveInstallationAccount(installationId);
+  console.log(
+    "OK — installation account:",
+    account.login || "?",
+    "type=",
+    account.type || "?"
+  );
+  if (platformInstallationId && account.type !== "Organization") {
+    console.warn(
+      "AVISO — repos managed exigem instalação numa Organization (não User)."
+    );
   }
 
   const { token: ghsToken, expiresAt } =
@@ -79,7 +106,26 @@ try {
     console.log("OK — GET /repos/" + owner + "/" + repo + " id=", repoData.id);
   }
 
+  if (process.env.GITHUB_VERIFY_CREATE_REPO === "1") {
+    const testName = `df-verify-${Date.now().toString(36)}`;
+    const created = await createRepository(installationId, {
+      name: testName,
+      private: true,
+      description: "AI Factory verify script (apagar)",
+    });
+    console.log("OK — createInOrg:", created.fullName);
+    const [owner, repo] = created.fullName.split("/");
+    const octokit = await getInstallationOctokit(installationId);
+    await octokit.repos.delete({ owner, repo });
+    console.log("OK — repo de teste removido:", created.fullName);
+  }
+
   console.log("\nTudo OK — pode Conectar GitHub no portal.");
+  if (platformInstallationId && process.env.GITHUB_VERIFY_CREATE_REPO !== "1") {
+    console.log(
+      "Dica: GITHUB_VERIFY_CREATE_REPO=1 npm run verify:github-app — testa createInOrg."
+    );
+  }
 } catch (e) {
   console.error("Falhou:", e.status || "", e.message || e);
   if (e.status === 401) {

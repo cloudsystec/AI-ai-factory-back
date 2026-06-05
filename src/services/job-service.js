@@ -19,7 +19,7 @@ import {
   releaseWorkLocksForJob,
 } from "./work-lock-service.js";
 import { getInstallationOctokit } from "./github-app-service.js";
-import { getProjectGitRow } from "./project-git-service.js";
+import { getProjectGitRow, getProjectInstallationId } from "./project-git-service.js";
 
 const VALID_KINDS = new Set([
   "scope",
@@ -30,6 +30,7 @@ const VALID_KINDS = new Set([
   "tech-lead-review",
   "micro-integration-qa",
   "micro-release",
+  "git-migrate",
 ]);
 
 const EXECUTOR_JOB_KINDS = new Set([
@@ -57,6 +58,7 @@ const CLAIM_KIND_PRIORITY = {
   "tech-lead-review": 50,
   "micro-integration-qa": 60,
   "micro-release": 70,
+  "git-migrate": 35,
 };
 
 /**
@@ -293,11 +295,11 @@ export async function claimJob(tenantId, workerId, opts = {}) {
 
     let job = null;
     for (const candidate of sorted) {
-      if (provisionOnly && candidate.kind !== "provision") {
+      if (provisionOnly && !["provision", "git-migrate"].includes(candidate.kind)) {
         continue;
       }
-      if (candidate.kind === "provision") {
-        /* Provision corre sem Play — infra Git do projecto */
+      if (candidate.kind === "provision" || candidate.kind === "git-migrate") {
+        /* Infra Git — corre sem Play activo */
       } else if (!activeProjectSet.has(candidate.project_slug)) {
         continue;
       }
@@ -395,18 +397,33 @@ export async function claimJob(tenantId, workerId, opts = {}) {
 
 /**
  * Token GitHub installation para jobs no worker (curta duração).
+ * Preferência: installation do projecto; fallback tenant.
  * @param {string} tenantId
+ * @param {string} [projectSlug]
  */
-export async function getGitHubTokenForTenant(tenantId) {
-  const { rows } = await query(
-    `SELECT github_installation_id FROM tenants WHERE id = $1`,
-    [tenantId]
-  );
-  const installationId = rows[0]?.github_installation_id;
+export async function getGitHubTokenForProject(tenantId, projectSlug) {
+  let installationId = null;
+  if (projectSlug) {
+    installationId = await getProjectInstallationId(tenantId, projectSlug);
+  }
+  if (!installationId) {
+    const { rows } = await query(
+      `SELECT github_installation_id FROM tenants WHERE id = $1`,
+      [tenantId]
+    );
+    installationId = rows[0]?.github_installation_id;
+  }
   if (!installationId) return null;
   const { getInstallationAccessToken } = await import("./github-app-service.js");
   const { token } = await getInstallationAccessToken(installationId);
   return token;
+}
+
+/**
+ * @param {string} tenantId
+ */
+export async function getGitHubTokenForTenant(tenantId) {
+  return getGitHubTokenForProject(tenantId);
 }
 
 /**
