@@ -37,18 +37,18 @@ export async function handleGitHubInstallCallback(req, res) {
     process.env.CORS_ORIGIN?.split(",")[0]?.trim() || "http://localhost:5173";
 
   if (!installationId || !state) {
-    return res.send(`<html><body><script>window.opener?window.close():window.location="${front}/?github=error"</script></body></html>`);
+    return res.send(`<html><body><script>window.opener?window.close():window.location="${front}/app?github=error"</script></body></html>`);
   }
 
   try {
     const decoded = jwt.verify(String(state), process.env.JWT_SECRET);
     const tenantId = decoded.tenantId;
     await connectInstallationToTenant(tenantId, BigInt(installationId));
-    return res.send(`<html><body><p>Conectado! Esta janela vai fechar.</p><script>window.opener?window.close():window.location="${front}/?github=connected"</script></body></html>`);
+    return res.send(`<html><body><p>Conectado! Esta janela vai fechar.</p><script>window.opener?window.close():window.location="${front}/app?github=connected"</script></body></html>`);
   } catch (e) {
     const msg = String(e.message || e);
     log.warn("GitHub callback falhou", { reason: msg });
-    return res.send(`<html><body><p>Erro na conexão.</p><script>window.opener?window.close():window.location="${front}/?github=error"</script></body></html>`);
+    return res.send(`<html><body><p>Erro na conexão.</p><script>window.opener?window.close():window.location="${front}/app?github=error"</script></body></html>`);
   }
 }
 
