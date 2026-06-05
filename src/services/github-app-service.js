@@ -144,10 +144,7 @@ function resolvePrivateKeyPath(configured) {
 export function loadPrivateKeyPem(opts = {}) {
   const inline = String(process.env.GITHUB_APP_PRIVATE_KEY || "").trim();
   if (inline) {
-    const decoded = inline.includes("\\n")
-      ? inline.replace(/\\n/g, "\n")
-      : inline;
-    return normalizePrivateKeyPem(decoded);
+    return normalizePrivateKeyPem(decodeInlinePrivateKey(inline));
   }
 
   const configured = process.env.GITHUB_APP_PRIVATE_KEY_PATH?.trim();
@@ -173,11 +170,68 @@ export function loadPrivateKeyPem(opts = {}) {
 /**
  * @param {string} raw
  */
+function stripEnvQuotes(raw) {
+  const t = String(raw || "").trim();
+  if (
+    (t.startsWith('"') && t.endsWith('"')) ||
+    (t.startsWith("'") && t.endsWith("'"))
+  ) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+/**
+ * @param {string} raw
+ */
+function decodeInlinePrivateKey(raw) {
+  let text = stripEnvQuotes(raw);
+  if (text.includes("\\n")) {
+    text = text.replace(/\\n/g, "\n");
+  }
+  return text;
+}
+
+/**
+ * Re-formata PEM colado numa linha só (comum no Railway).
+ * @param {string} pem
+ */
+function reflowOneLinePem(pem) {
+  const compact = pem.replace(/\s+/g, " ").trim();
+  const beginMatch = compact.match(/-----BEGIN [A-Z ]+-----/);
+  const endMatch = compact.match(/-----END [A-Z ]+-----/);
+  if (!beginMatch || !endMatch) return pem;
+
+  const begin = beginMatch[0];
+  const end = endMatch[0];
+  const body = compact
+    .slice(beginMatch.index + begin.length, compact.indexOf(end))
+    .replace(/\s+/g, "");
+
+  if (!body) return pem;
+
+  const lines = [begin];
+  for (let i = 0; i < body.length; i += 64) {
+    lines.push(body.slice(i, i + 64));
+  }
+  lines.push(end);
+  return lines.join("\n");
+}
+
+/**
+ * @param {string} raw
+ */
 function normalizePrivateKeyPem(raw) {
-  const pem = String(raw || "")
+  let pem = String(raw || "")
     .replace(/^\uFEFF/, "")
     .replace(/\r\n/g, "\n")
     .trim();
+
+  if (!pem.includes("\n") && pem.includes("-----BEGIN")) {
+    pem = reflowOneLinePem(pem);
+  }
+
+  pem = pem.trim();
   if (!pem.includes("BEGIN") || !pem.includes("PRIVATE KEY")) {
     throw githubKeyError("PEM inválido: ficheiro deve conter BEGIN/END PRIVATE KEY.");
   }

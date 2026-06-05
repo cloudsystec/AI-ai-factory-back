@@ -89,12 +89,27 @@ app.get("/health/github", async (_req, res) => {
       platformInstallationId: platformInstallationId || null,
     });
   } catch (e) {
+    let pemFingerprint = null;
+    try {
+      const pem = loadPrivateKeyPem();
+      pemFingerprint = createHash("sha256")
+        .update(pem)
+        .digest("hex")
+        .slice(0, 16);
+    } catch {
+      /* PEM inválido */
+    }
+    const hint = /jwt|bad credentials/i.test(String(e.message || ""))
+      ? "GITHUB_APP_ID deve ser o número da mesma GitHub App que gerou GITHUB_APP_PRIVATE_KEY."
+      : undefined;
     res.status(503).json({
       ok: false,
       error: e.message,
       code: e.code || "github_health_failed",
       appId: process.env.GITHUB_APP_ID || null,
       appSlug: process.env.GITHUB_APP_SLUG || null,
+      pemFingerprint,
+      hint,
     });
   }
 });

@@ -17,6 +17,7 @@
     "set-cursor-admin-key": "node scripts/set-cursor-admin-key.js",
     "backfill-scope-md": "node scripts/backfill-scope-md.js",
     "verify:github-app": "node scripts/verify-github-app.mjs",
+    "railway:github-key": "node scripts/railway-github-key.mjs",
     "reset": "node scripts/reset-env.js",
     "reset:drop": "node scripts/reset-env.js --drop",
     "reset:keep-tenant": "node scripts/reset-env.js --keep-tenant"
