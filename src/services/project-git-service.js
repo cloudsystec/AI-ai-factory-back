@@ -95,6 +95,19 @@ export async function setProjectGitStatus(tenantId, slug, status, error = null) 
 /**
  * @param {string} tenantId
  * @param {string} slug
+ * @param {string|null} error
+ */
+export async function setProjectGitLastError(tenantId, slug, error) {
+  await query(
+    `UPDATE projects SET git_last_error = $3, updated_at = now()
+     WHERE tenant_id = $1 AND slug = $2`,
+    [tenantId, slug, error]
+  );
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} slug
  */
 export async function getProjectInstallationId(tenantId, slug) {
   const row = await getProjectGitRow(tenantId, slug);

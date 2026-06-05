@@ -15,6 +15,105 @@ const BACK_ROOT = path.resolve(
 /** @type {Map<string, { token: string, expiresAt: number }>} */
 const tokenCache = new Map();
 
+const DEFAULT_RETRY_DELAYS_MS = [500, 1000, 2000, 4000];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * @param {unknown} e
+ */
+function isRetryableGitHubError(e) {
+  const status = Number(e?.status);
+  if ([401, 403, 408, 429, 500, 502, 503, 504].includes(status)) return true;
+  const code = String(e?.cause?.code || e?.code || "");
+  return ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"].includes(code);
+}
+
+function githubRetryDelaysMs() {
+  const raw = String(process.env.GITHUB_APP_RETRY_DELAY_MS || "").trim();
+  if (!raw) return DEFAULT_RETRY_DELAYS_MS;
+  const parsed = raw
+    .split(",")
+    .map((n) => Number(n.trim()))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  return parsed.length ? parsed : DEFAULT_RETRY_DELAYS_MS;
+}
+
+function githubRetryMaxAttempts() {
+  const raw = Number(process.env.GITHUB_APP_RETRY_MAX_ATTEMPTS || 4);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 8) : 4;
+}
+
+/**
+ * Retries GitHub App auth/API flakiness (401 Bad credentials intermitente, 429, 5xx).
+ * Cada tentativa deve gerar JWT novo dentro de `fn`.
+ * @template T
+ * @param {string} label
+ * @param {() => Promise<T>} fn
+ */
+async function withGitHubRetry(label, fn) {
+  const maxAttempts = githubRetryMaxAttempts();
+  const delays = githubRetryDelaysMs();
+  /** @type {unknown} */
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      const delayMs = delays[attempt - 1] ?? delays.at(-1) ?? 1000;
+      const { log } = await import("../lib/logger.js");
+      log.warn("GitHub API retry", {
+        label,
+        attempt: attempt + 1,
+        maxAttempts,
+        delayMs,
+        status: lastErr?.status,
+        message: lastErr?.message,
+      });
+      await sleep(delayMs);
+    }
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!isRetryableGitHubError(e) || attempt >= maxAttempts - 1) {
+        throw e;
+      }
+    }
+  }
+
+  throw lastErr;
+}
+
+/**
+ * @param {string} apiPath
+ * @param {{ method?: string, body?: unknown }} [options]
+ */
+async function githubAppFetchAsAppOnce(apiPath, options = {}) {
+  const { method = "GET", body } = options;
+  const appJwt = createAppJwt();
+  return githubAppFetch(apiPath, { method, token: appJwt, body });
+}
+
+/**
+ * @param {string} apiPath
+ * @param {{ method?: string, body?: unknown }} [options]
+ */
+async function githubAppFetchAsApp(apiPath, options = {}) {
+  const { method = "GET" } = options;
+  return withGitHubRetry(`${method} ${apiPath}`, () =>
+    githubAppFetchAsAppOnce(apiPath, options)
+  );
+}
+
+/**
+ * @param {bigint|number|string} installationId
+ */
+export function clearInstallationTokenCache(installationId) {
+  tokenCache.delete(String(installationId));
+}
+
 function appId() {
   const id = process.env.GITHUB_APP_ID || "";
   return id ? Number(id) : 0;
@@ -170,8 +269,7 @@ export async function githubAppFetch(apiPath, options) {
 
 /** @returns {Promise<unknown[]>} */
 export async function listAppInstallations() {
-  const appJwt = createAppJwt();
-  const data = await githubAppFetch("/app/installations", { token: appJwt });
+  const data = await githubAppFetchAsApp("/app/installations");
   return Array.isArray(data) ? data : [];
 }
 
@@ -192,11 +290,11 @@ export async function isGitHubAppApiReachable() {
  * @param {bigint|number|string} installationId
  */
 export async function getInstallationAccessToken(installationId) {
-  const appJwt = createAppJwt();
+  const id = Number(installationId);
   try {
-    const data = await githubAppFetch(
-      `/app/installations/${Number(installationId)}/access_tokens`,
-      { method: "POST", token: appJwt }
+    const data = await githubAppFetchAsApp(
+      `/app/installations/${id}/access_tokens`,
+      { method: "POST" }
     );
     return {
       token: data.token,
@@ -205,14 +303,15 @@ export async function getInstallationAccessToken(installationId) {
   } catch (e) {
     const pem = privateKeyPem();
     const { log } = await import("../lib/logger.js");
-    log.warn("GitHub access_tokens falhou", {
+    log.error("GitHub access_tokens esgotou retries", {
       appId: appId(),
       installationId: String(installationId),
       pemFingerprint: pemFingerprint(pem),
       status: e.status,
       message: e.message,
+      attempts: githubRetryMaxAttempts(),
     });
-    throw e;
+    throw Object.assign(e, { code: e.code || "github_auth_exhausted" });
   }
 }
 
@@ -225,6 +324,7 @@ export async function getInstallationOctokit(installationId) {
   if (cached && cached.expiresAt > Date.now() + 60_000) {
     return new Octokit({ auth: cached.token });
   }
+  clearInstallationTokenCache(installationId);
   const { token, expiresAt } = await getInstallationAccessToken(installationId);
   tokenCache.set(id, { token, expiresAt });
   return new Octokit({ auth: token });
@@ -363,10 +463,8 @@ export async function createRepository(installationId, opts) {
  * @returns {Promise<{ login: string, type: string }>}
  */
 export async function resolveInstallationAccount(installationId) {
-  const appJwt = createAppJwt();
-  const data = await githubAppFetch(
-    `/app/installations/${Number(installationId)}`,
-    { token: appJwt }
+  const data = await githubAppFetchAsApp(
+    `/app/installations/${Number(installationId)}`
   );
   return {
     login: data.account?.login || "",

@@ -18,6 +18,7 @@ import {
 import { assertExecutorCanRunJobs } from "../services/user-service.js";
 import { assertBotsReadyForSlots } from "../services/worker-bot-service.js";
 import { broadcast, broadcastWorkersAndJobs } from "../lib/ws-hub.js";
+import { getProjectGitRow } from "../services/project-git-service.js";
 
 export const executionRouter = Router();
 executionRouter.use(requireAuth, attachCapabilities, requireActivePlan);
@@ -28,11 +29,15 @@ executionRouter.get("/:projectSlug/state", async (req, res) => {
     return res.status(400).json({ error: "projectSlug inválido" });
   }
   const state = await getExecutionState(req.user.tenantId, projectSlug);
+  const gitRow = await getProjectGitRow(req.user.tenantId, projectSlug);
   res.json({
     continuousActive: state.continuous_active,
     pauseAfterCurrent: state.pause_after_current,
     selectedWorkerSlots: state.selected_worker_slots || [],
     macroId: state.macro_id,
+    gitStatus: gitRow?.git_status ?? null,
+    gitLastError: gitRow?.git_last_error ?? null,
+    repoMode: gitRow?.github_repo_mode ?? null,
   });
 });
 

@@ -12,7 +12,47 @@ import {
 import { bumpAutoRetryForTask, readTasksState } from "./task-state-service.js";
 import { isLockFree } from "./work-lock-service.js";
 import { log } from "../lib/logger.js";
-import { getProjectGitRow } from "./project-git-service.js";
+import { getProjectGitRow, setProjectGitLastError } from "./project-git-service.js";
+
+/**
+ * @param {string} message
+ */
+function managedGitFailureHint(message) {
+  const m = String(message || "");
+  if (/json web token could not be decoded/i.test(m)) {
+    return `${m} — Verifique GITHUB_APP_PRIVATE_KEY no Railway (PEM RSA completo; use \\n entre linhas).`;
+  }
+  if (/bad credentials|401/i.test(m)) {
+    return `${m} — Confirme GITHUB_APP_ID e chave privada da mesma GitHub App.`;
+  }
+  return m || "Não foi possível preparar o workspace.";
+}
+
+/**
+ * @param {Error & { code?: string }} e
+ */
+function managedGitFailureCode(e) {
+  const msg = String(e?.message || "");
+  if (/json web token could not be decoded/i.test(msg)) return "github_jwt_invalid";
+  if (e?.code) return String(e.code);
+  return "managed_git_failed";
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {Record<string, unknown>} result
+ */
+async function attachGitDiag(tenantId, projectSlug, result) {
+  const row = await getProjectGitRow(tenantId, projectSlug);
+  if (!row) return result;
+  return {
+    ...result,
+    gitStatus: row.git_status,
+    gitLastError: row.git_last_error,
+    repoMode: row.github_repo_mode,
+  };
+}
 
 /**
  * @param {string} tenantId
@@ -185,14 +225,16 @@ export async function startContinuousExecution(tenantId, projectSlug, opts) {
     ]
   );
   const dispatched = await dispatchQueuedWork(tenantId, projectSlug);
-  return {
+  return attachGitDiag(tenantId, projectSlug, {
     continuousActive: !dispatched.projectCompleted,
     workerSlots: dispatched.projectCompleted ? [] : slots,
     enqueued: dispatched.enqueued,
     hint: dispatched.hint,
+    code: dispatched.code,
+    phase: dispatched.phase,
     projectCompleted: dispatched.projectCompleted ?? false,
     completedAt: dispatched.completedAt ?? null,
-  };
+  });
 }
 
 /**
@@ -358,14 +400,16 @@ export async function addWorkersToExecution(tenantId, projectSlug, newSlots, exe
   });
 
   const dispatched = await dispatchQueuedWork(tenantId, projectSlug);
-  return {
+  return attachGitDiag(tenantId, projectSlug, {
     continuousActive: dispatched.projectCompleted ? false : true,
     workerSlots: dispatched.projectCompleted ? [] : merged,
     enqueued: dispatched.enqueued,
     hint: dispatched.hint,
+    code: dispatched.code,
+    phase: dispatched.phase,
     projectCompleted: dispatched.projectCompleted ?? false,
     completedAt: dispatched.completedAt ?? null,
-  };
+  });
 }
 
 /**
@@ -542,18 +586,25 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       try {
         await ensureManagedGitRepository(tenantId, projectSlug);
       } catch (e) {
+        const hint = managedGitFailureHint(e.message);
+        const code = managedGitFailureCode(e);
         log.error("Falha ao criar repo managed", {
           project: projectSlug,
           error: e.message,
+          code,
         });
+        await setProjectGitLastError(tenantId, projectSlug, hint);
         return {
           enqueued: [],
-          hint: e.message || "Não foi possível preparar o workspace.",
+          hint,
+          code,
+          phase: "managed_git_create",
         };
       }
     }
 
-    if (gitRow.git_status === "migrating") {
+    const freshGit = await getProjectGitRow(tenantId, projectSlug);
+    if (freshGit?.git_status === "migrating") {
       const { ensureGitMigrateJob } = await import("./git-migrate-service.js");
       const mig = await ensureGitMigrateJob(tenantId, projectSlug);
       if (mig?.jobId) {
@@ -571,9 +622,14 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       return {
         enqueued: [{ jobId: prov.jobId, kind: "provision" }],
         hint: null,
+        phase: "git_provision",
       };
     }
-    return { enqueued: [], hint: "A preparar workspace…" };
+    return {
+      enqueued: [],
+      hint: "A preparar workspace…",
+      phase: "git_provision_wait",
+    };
   }
 
   const wave = await getMicroWaveState(tenantId, projectSlug);

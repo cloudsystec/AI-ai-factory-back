@@ -52,8 +52,55 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, booted });
 });
 
+app.get("/health/github", async (_req, res) => {
+  try {
+    const { createHash } = await import("node:crypto");
+    const {
+      isGitHubAppConfigured,
+      loadPrivateKeyPem,
+      listAppInstallations,
+      getInstallationAccessToken,
+    } = await import("./services/github-app-service.js");
+
+    if (!isGitHubAppConfigured()) {
+      return res.status(503).json({ ok: false, code: "github_not_configured" });
+    }
+
+    const pem = loadPrivateKeyPem();
+    const pemFingerprint = createHash("sha256")
+      .update(pem)
+      .digest("hex")
+      .slice(0, 16);
+
+    await listAppInstallations();
+
+    const platformInstallationId = String(
+      process.env.GITHUB_PLATFORM_INSTALLATION_ID || ""
+    ).trim();
+    if (platformInstallationId) {
+      await getInstallationAccessToken(platformInstallationId);
+    }
+
+    res.json({
+      ok: true,
+      appId: process.env.GITHUB_APP_ID || null,
+      appSlug: process.env.GITHUB_APP_SLUG || null,
+      pemFingerprint,
+      platformInstallationId: platformInstallationId || null,
+    });
+  } catch (e) {
+    res.status(503).json({
+      ok: false,
+      error: e.message,
+      code: e.code || "github_health_failed",
+      appId: process.env.GITHUB_APP_ID || null,
+      appSlug: process.env.GITHUB_APP_SLUG || null,
+    });
+  }
+});
+
 app.use((req, res, next) => {
-  if (req.path === "/health") return next();
+  if (req.path === "/health" || req.path === "/health/github") return next();
   if (!booted) {
     res.status(503).json({ ok: false, status: "starting" });
     return;
