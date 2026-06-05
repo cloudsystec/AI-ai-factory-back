@@ -241,7 +241,7 @@ export async function provisionWorkerForTenant(tenantId, opts = {}) {
     const env = await buildTenantWorkerEnv(tenantId);
     if (!env.BACK_URL || !env.WORKER_SECRET || !env.REDIS_URL) {
       throw new Error(
-        "PUBLIC_BACK_URL, WORKER_SECRET e REDIS_URL/TENANT_REDIS_URL são obrigatórios para o worker"
+        "WORKER_BACK_URL (ou PUBLIC_BACK_URL), WORKER_SECRET e REDIS_URL/TENANT_REDIS_URL são obrigatórios para o worker"
       );
     }
 

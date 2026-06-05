@@ -40,6 +40,22 @@ O poller **não** corre na API.
 - API: `GET https://<api>/health` → `{ ok: true }`
 - Poller: logs do deploy devem mostrar arranque do intervalo; na BD, calls `pending`/`estimated` com `ended_at` passam a `settled` + `source = cursor_admin_api`.
 
+### Rede privada (CLI workers + poller)
+
+Serviços no **mesmo projecto/ambiente** Railway podem falar entre si sem HTTPS público.
+
+**API (`ai-factory-back`):**
+
+```
+WORKER_BACK_URL=http://${{ai-factory-back.RAILWAY_PRIVATE_DOMAIN}}:${{ai-factory-back.PORT}}
+WORKER_REDIS_URL=${{Redis.REDIS_PRIVATE_URL}}   # ou URL privada do plugin
+PUBLIC_BACK_URL=https://<url-publica-do-back>   # mantém para OAuth/GitHub/Stripe
+```
+
+Workers provisionados recebem `BACK_URL` = `WORKER_BACK_URL` automaticamente (`buildTenantWorkerEnv`). **Re-provisionar** ou aplicar config nos workers existentes para propagar.
+
+**Poller (`ai-factory-poller`):** não chama a API HTTP — só Postgres, Redis e Cursor Admin API. Ganho = usar URLs **privadas** do Postgres/Redis no serviço poller (Reference Variables). A Cursor API continua HTTPS externo (inevitável).
+
 ---
 
 ## Variáveis: quem precisa do quê
@@ -50,7 +66,9 @@ O poller **não** corre na API.
 | `ENCRYPTION_KEY` | ✓ | ✓ |
 | `REDIS_URL` | ✓ | ✓ (recomendado) |
 | `JWT_SECRET` | ✓ | — |
-| `CORS_ORIGIN` | ✓ | — |
+| `PUBLIC_BACK_URL` | ✓ | — | URL pública (GitHub, Stripe, links) |
+| `WORKER_BACK_URL` | ✓ | — | URL **interna** para workers CLI (`http://…railway.internal:PORT`) |
+| `WORKER_REDIS_URL` | ✓ | ✓ | Redis **interno** para workers/poller (opcional; fallback `TENANT_REDIS_URL`) |
 | `WORKER_SECRET` | ✓ | — |
 | `GITHUB_PLATFORM_INSTALLATION_ID` | ✓ | — |
 | `GITHUB_MANAGED_REPO_PREFIX` | ✓ (opcional, default `df`) | — |

@@ -1,6 +1,24 @@
 import { query } from "../db/pool.js";
 import { decrypt } from "../lib/crypto.js";
 
+/** URL da API para workers (rede privada Railway ou pública). */
+export function resolveWorkerBackUrl() {
+  return String(
+    process.env.WORKER_BACK_URL || process.env.PUBLIC_BACK_URL || ""
+  ).replace(/\/$/, "");
+}
+
+/** Redis para workers (preferir URL privada em produção). */
+export function resolveWorkerRedisUrl() {
+  return String(
+    process.env.WORKER_REDIS_URL ||
+      process.env.TENANT_REDIS_URL ||
+      process.env.REDIS_URL_DOCKER ||
+      process.env.REDIS_URL ||
+      ""
+  );
+}
+
 /**
  * Variáveis de ambiente para o worker CLI (Railway ou ficheiro .env local).
  * @param {string} tenantId
@@ -18,14 +36,9 @@ export async function buildTenantWorkerEnv(tenantId) {
 
   const env = {
     TENANT_ID: tenantId,
-    BACK_URL: String(process.env.PUBLIC_BACK_URL || "").replace(/\/$/, ""),
+    BACK_URL: resolveWorkerBackUrl(),
     WORKER_SECRET: String(process.env.WORKER_SECRET || ""),
-    REDIS_URL: String(
-      process.env.TENANT_REDIS_URL ||
-        process.env.REDIS_URL_DOCKER ||
-        process.env.REDIS_URL ||
-        ""
-    ),
+    REDIS_URL: resolveWorkerRedisUrl(),
     CURSOR_AGENT_TRUST: String(process.env.CURSOR_AGENT_TRUST ?? "1"),
   };
 
