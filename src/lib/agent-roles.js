@@ -17,6 +17,7 @@ export const AGENT_ROLES = [
   { roleKey: "techlead_task_validator", file: "agents/techlead-task-validator.md" },
   { roleKey: "task_refiner", file: "agents/task-refiner.md" },
   { roleKey: "task_prioritizer", file: "agents/task-prioritizer.md" },
+  { roleKey: "deploy_railway", file: "agents/deploy-railway.md" },
 ];
 
 const fileToRole = new Map(AGENT_ROLES.map((r) => [r.file, r.roleKey]));

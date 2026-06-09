@@ -11,7 +11,7 @@ Sua função:
 
 ## Quantidade e granularidade (obrigatório)
 
-- Produza **entre 3 e 7** microescopos no total, salvo macro excecionalmente grande (máximo absoluto: 8).
+- Produza **entre 1 e 7** microescopos no total, salvo macro excecionalmente grande (máximo absoluto: 15).
 - **Não atomize** em dezenas de micros (ex.: “só bootstrap HTTP”, “só health”, “só config”) se puderem ser **uma trilha** integrada (ex.: “API mínima utilizável com health e contrato base”).
 - Descrições **objetivas e concisas** (2–4 frases úteis). A IA de implementação completa detalhes técnicos; evite micro-gerenciar ficheiros, nomes de rotas ou passos óbvios.
 - Cada micro = incremento **utilizável** ou base claramente necessária para o próximo; priorize direção de **MVP / correção / evolução**, não checklist de camadas.

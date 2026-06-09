@@ -93,6 +93,8 @@ async function withGitHubRetry(label, fn) {
 async function githubAppFetchAsAppOnce(apiPath, options = {}) {
   const { method = "GET", body } = options;
   const appJwt = createAppJwt();
+  
+  await sleep(3000);
   return githubAppFetch(apiPath, { method, token: appJwt, body });
 }
 

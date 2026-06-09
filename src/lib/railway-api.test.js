@@ -11,6 +11,9 @@ import {
   railwayCliBranch,
   railwayCliRegion,
   railwayCliRepo,
+  buildClientServicePatch,
+  normalizeRootDirectory,
+  formatBuildLogSnippet,
   serviceInstanceHasRepo,
   toStagedVariableMap,
   workerServiceName,
@@ -103,6 +106,27 @@ describe("railway-api worker mount path", () => {
   });
 });
 
+describe("railway-api client service patch", () => {
+  it("normalizeRootDirectory omite raiz .", () => {
+    assert.equal(normalizeRootDirectory("."), undefined);
+    assert.equal(normalizeRootDirectory("./"), undefined);
+    assert.equal(normalizeRootDirectory("api"), "api");
+  });
+
+  it("buildClientServicePatch config não inclui rootDirectory .", () => {
+    const patch = buildClientServicePatch(
+      {
+        rootDirectory: ".",
+        dockerfilePath: "Dockerfile",
+        variables: { PORT: "8080" },
+      },
+      "config"
+    );
+    assert.equal(patch.rootDirectory, undefined);
+    assert.equal(patch.build?.builder, "DOCKERFILE");
+  });
+});
+
 describe("railway-api worker health", () => {
   it("serviceInstanceHasRepo compara repo esperado", () => {
     assert.equal(
@@ -159,5 +183,20 @@ describe("railway-api worker health", () => {
       if (prev === undefined) delete process.env.RAILWAY_WORKER_SKIP_VOLUME;
       else process.env.RAILWAY_WORKER_SKIP_VOLUME = prev;
     }
+  });
+});
+
+describe("formatBuildLogSnippet", () => {
+  it("prioriza linhas de erro e cauda", () => {
+    const logs = [
+      { message: "Step 1/10 : FROM node:20" },
+      { message: "Step 5/10 : COPY package.json ./" },
+      { message: "ERROR: failed to solve: not found" },
+      { message: "Build failed with exit code 1" },
+    ];
+    const snippet = formatBuildLogSnippet(logs);
+    assert.match(snippet, /failed to solve/);
+    assert.match(snippet, /exit code 1/);
+    assert.match(snippet, /COPY package.json/);
   });
 });

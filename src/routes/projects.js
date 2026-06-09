@@ -55,6 +55,11 @@ import { assertProjectCreationReady } from "../services/macro-help-service.js";
 import { toPublicProjectGit, isManagedGitRepoMode } from "../lib/project-git-public.js";
 import { exportProjectCodeZip } from "../services/project-export-service.js";
 import { startGitMigration } from "../services/git-migrate-service.js";
+import { startGitDisconnect, getGitDisconnectStatus } from "../services/git-disconnect-service.js";
+import {
+  getPublishStatus,
+  startPublishJob,
+} from "../services/project-railway-service.js";
 
 
 
@@ -447,6 +452,80 @@ projectsRouter.post("/:slug/migrate-git", requireCapability("write"), async (req
   try {
     const result = await startGitMigration(req.user.tenantId, slug, req.body);
     res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+
+
+projectsRouter.post("/:slug/disconnect-git", requireCapability("write"), async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const result = await startGitDisconnect(req.user.tenantId, slug);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+projectsRouter.get("/:slug/disconnect-git", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const status = await getGitDisconnectStatus(req.user.tenantId, slug);
+    res.json(status);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+
+
+projectsRouter.post("/:slug/railway-publish", requireCapability("write"), async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const result = await startPublishJob(
+      req.user.tenantId,
+      slug,
+      req.user.id
+    );
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+
+
+projectsRouter.get("/:slug/railway-publish", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!isValidProjectSlug(slug)) {
+    return res.status(400).json({ error: "Slug inválido" });
+  }
+  try {
+    const status = await getPublishStatus(req.user.tenantId, slug);
+    res.json(status);
   } catch (error) {
     res.status(error.status || 500).json({
       error: error.message || String(error),

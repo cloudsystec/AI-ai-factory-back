@@ -81,6 +81,43 @@ export async function ensureProjectAgentOverrides(tenantId, projectSlug) {
   );
   if (!rows[0]) {
     await cloneAgentTemplatesToProject(tenantId, projectSlug);
+  } else {
+    await backfillMissingProjectAgentRoles(tenantId, projectSlug);
+  }
+}
+
+/**
+ * Insere overrides em falta quando novos roles são adicionados ao catálogo.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function backfillMissingProjectAgentRoles(tenantId, projectSlug) {
+  await ensureAgentTemplatesComplete();
+  const { rows: templates } = await query(
+    "SELECT role_key, content FROM agent_templates"
+  );
+  for (const t of templates) {
+    await query(
+      `INSERT INTO project_agent_overrides (tenant_id, project_slug, role_key, content)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, project_slug, role_key) DO NOTHING`,
+      [tenantId, projectSlug, t.role_key, t.content]
+    );
+  }
+}
+
+/**
+ * Garante que agent_templates tem todos os roles do repo (inclui roles novos).
+ */
+export async function ensureAgentTemplatesComplete() {
+  const roles = loadDefaultAgentContentFromRepo();
+  for (const [roleKey, content] of Object.entries(roles)) {
+    await query(
+      `INSERT INTO agent_templates (role_key, content, updated_by)
+       VALUES ($1, $2, 'seed')
+       ON CONFLICT (role_key) DO NOTHING`,
+      [roleKey, content]
+    );
   }
 }
 
@@ -90,6 +127,7 @@ export async function ensureProjectAgentOverrides(tenantId, projectSlug) {
  * @returns {Promise<Record<string, string>>}
  */
 export async function getEffectiveAgentConfigForProject(tenantId, projectSlug) {
+  await ensureAgentTemplatesComplete();
   await ensureProjectAgentOverrides(tenantId, projectSlug);
 
   const { rows: overrides } = await query(

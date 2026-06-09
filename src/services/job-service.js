@@ -31,6 +31,7 @@ const VALID_KINDS = new Set([
   "micro-integration-qa",
   "micro-release",
   "git-migrate",
+  "railway-publish",
 ]);
 
 const EXECUTOR_JOB_KINDS = new Set([
@@ -59,6 +60,7 @@ const CLAIM_KIND_PRIORITY = {
   "micro-integration-qa": 60,
   "micro-release": 70,
   "git-migrate": 35,
+  "railway-publish": 38,
 };
 
 /**
@@ -126,7 +128,7 @@ export async function queueJob(tenantId, body, opts = {}) {
     throw Object.assign(new Error("Todos os slots ocupados"), { status: 429 });
   }
 
-  if (kind !== "provision") {
+  if (kind !== "provision" && kind !== "railway-publish") {
     const { assertProjectNotCompleted } = await import(
       "./project-completion-service.js"
     );
@@ -158,7 +160,7 @@ export async function queueJob(tenantId, body, opts = {}) {
   }
   const payload =
     payloadObj != null ? JSON.stringify(payloadObj) : null;
-  const requestedBy = EXECUTOR_JOB_KINDS.has(kind)
+  const requestedBy = EXECUTOR_JOB_KINDS.has(kind) || kind === "railway-publish"
     ? opts.requestedByUserId || null
     : null;
   await query(
@@ -233,11 +235,60 @@ export async function queueProvisionJob(tenantId, input) {
  * @param {string} workerId
  * @param {{ provisionOnly?: boolean }} [opts]
  */
+async function hasQueuedInfraJobWithoutBot(tenantId) {
+  const { rows } = await query(
+    `SELECT kind FROM jobs
+     WHERE tenant_id = $1 AND status = 'queued'
+       AND kind IN ('provision', 'git-migrate', 'railway-publish')
+     LIMIT 1`,
+    [tenantId]
+  );
+  if (!rows[0]) return false;
+  if (rows[0].kind === "railway-publish") {
+    return Boolean(
+      String(process.env.PLATFORM_CURSOR_ADMIN_API_KEY || "").trim()
+    );
+  }
+  return true;
+}
+
+/**
+ * Job id para registar billing de infra (ex.: railway-publish) no projecto —
+ * ancora no último job do slot 1 no mesmo projecto, senão o job infra actual.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} fallbackJobId
+ */
+export async function resolveBillingJobIdForProjectSlot1(
+  tenantId,
+  projectSlug,
+  fallbackJobId
+) {
+  const { rows } = await query(
+    `SELECT j.id
+     FROM jobs j
+     INNER JOIN work_locks wl
+       ON wl.job_id = j.id AND wl.tenant_id = j.tenant_id
+     WHERE j.tenant_id = $1
+       AND j.project_slug = $2
+       AND wl.worker_slot = 1
+       AND j.kind NOT IN ('provision', 'git-migrate', 'railway-publish')
+     ORDER BY
+       CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+       j.started_at DESC NULLS LAST,
+       j.created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  return rows[0]?.id || fallbackJobId;
+}
+
 export async function claimJob(tenantId, workerId, opts = {}) {
   const provisionOnly = opts.provisionOnly === true;
   const workerSlot = parseWorkerSlot(workerId);
   const { isBotReady } = await import("./worker-bot-service.js");
-  if (!(await isBotReady(tenantId, workerSlot))) {
+  const botReady = await isBotReady(tenantId, workerSlot);
+  if (!botReady && !(await hasQueuedInfraJobWithoutBot(tenantId))) {
     return { job: null, error: "bot_not_configured", workerSlot };
   }
 
@@ -249,7 +300,16 @@ export async function claimJob(tenantId, workerId, opts = {}) {
     activeProjects.map((p) => p.projectSlug)
   );
   if (!provisionOnly && activeProjectSet.size === 0) {
-    return { job: null, workerSlot };
+    const { rows: infraQueued } = await query(
+      `SELECT 1 FROM jobs
+       WHERE tenant_id = $1 AND status = 'queued'
+         AND kind IN ('provision', 'git-migrate', 'railway-publish')
+       LIMIT 1`,
+      [tenantId]
+    );
+    if (!infraQueued[0]) {
+      return { job: null, workerSlot };
+    }
   }
 
   const client = await (await import("../db/pool.js")).getPool().connect();
@@ -295,11 +355,20 @@ export async function claimJob(tenantId, workerId, opts = {}) {
 
     let job = null;
     for (const candidate of sorted) {
-      if (provisionOnly && !["provision", "git-migrate"].includes(candidate.kind)) {
+      if (
+        !botReady &&
+        !["provision", "git-migrate", "railway-publish"].includes(candidate.kind)
+      ) {
         continue;
       }
-      if (candidate.kind === "provision" || candidate.kind === "git-migrate") {
-        /* Infra Git — corre sem Play activo */
+      if (
+        provisionOnly &&
+        !["provision", "git-migrate", "railway-publish"].includes(candidate.kind)
+      ) {
+        continue;
+      }
+      if (candidate.kind === "provision" || candidate.kind === "git-migrate" || candidate.kind === "railway-publish") {
+        /* Infra Git / publicação — corre sem Play activo */
       } else if (!activeProjectSet.has(candidate.project_slug)) {
         continue;
       }
@@ -460,10 +529,11 @@ export async function completeJob(tenantId, jobId, payload) {
   const pool = (await import("../db/pool.js")).getPool();
   const client = await pool.connect();
   let projectSlug = null;
+  let jobKind = null;
   try {
     await client.query("BEGIN");
     const { rows: jobMeta } = await client.query(
-      `SELECT j.project_slug, u.email AS executor_email,
+      `SELECT j.project_slug, j.kind, u.email AS executor_email,
               wl.worker_slot,
               tw.cursor_bot_email AS bot_email
        FROM jobs j
@@ -480,6 +550,7 @@ export async function completeJob(tenantId, jobId, payload) {
       : null;
     const workerSlot = jobMeta[0]?.worker_slot ?? null;
     projectSlug = jobMeta[0]?.project_slug ?? null;
+    jobKind = jobMeta[0]?.kind ?? null;
 
     await client.query(
       `UPDATE jobs SET status = $2, finished_at = now(), exit_code = $3,
@@ -525,6 +596,27 @@ export async function completeJob(tenantId, jobId, payload) {
   }
 
   await releaseWorkLocksForJob(jobId);
+
+  if (jobKind === "railway-publish" && status === "failed" && projectSlug) {
+    try {
+      const { upsertRailwayDeployment } = await import(
+        "./project-railway-service.js"
+      );
+      await upsertRailwayDeployment(tenantId, projectSlug, {
+        status: "failed",
+        last_error:
+          "Não foi possível publicar a aplicação automaticamente. Tente novamente.",
+      });
+      const { broadcast } = await import("../lib/ws-hub.js");
+      broadcast(tenantId, {
+        type: "dashboard",
+        project: projectSlug,
+        reason: "railway-publish",
+      });
+    } catch {
+      /* ignore */
+    }
+  }
 
   try {
     const { reconcileTenantSlotsInUse } = await import(

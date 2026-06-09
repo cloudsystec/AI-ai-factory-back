@@ -23,9 +23,10 @@ async function hasProvisionJobActive(tenantId, projectSlug) {
  * Não exige Play nos workers nem execução contínua.
  * @param {string} tenantId
  * @param {string} projectSlug
+ * @param {{ resetGitCache?: boolean }} [opts]
  * @returns {Promise<{ jobId: string }|null>}
  */
-export async function ensureGitProvisionJob(tenantId, projectSlug) {
+export async function ensureGitProvisionJob(tenantId, projectSlug, opts = {}) {
   const gitRow = await getProjectGitRow(tenantId, projectSlug);
   if (!gitRow) return null;
 
@@ -35,7 +36,8 @@ export async function ensureGitProvisionJob(tenantId, projectSlug) {
   }
 
   if (await hasProvisionJobActive(tenantId, projectSlug)) {
-    return null;
+    const active = await getLatestProvisionJob(tenantId, projectSlug);
+    return active?.id ? { jobId: active.id } : null;
   }
 
   if (!gitRow.github_repo_full_name) {
@@ -59,6 +61,7 @@ export async function ensureGitProvisionJob(tenantId, projectSlug) {
           repoFullName: gitRow.github_repo_full_name,
           defaultBranch: gitRow.github_default_branch || "main",
           techLeadBranch: gitRow.github_tech_lead_branch || "tech-lead",
+          resetGitCache: opts.resetGitCache === true,
         },
       }),
     ]
@@ -75,9 +78,28 @@ export async function ensureGitProvisionJob(tenantId, projectSlug) {
   log.info("Provision Git enfileirado (sem Play)", {
     project: projectSlug,
     jobId: id,
+    resetGitCache: opts.resetGitCache === true,
   });
   return { jobId: id };
 }
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+async function getLatestProvisionJob(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT id, status, created_at, started_at, finished_at, exit_code
+     FROM jobs
+     WHERE tenant_id = $1 AND project_slug = $2 AND kind = 'provision'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  return rows[0] || null;
+}
+
+export { getLatestProvisionJob };
 
 /**
  * @param {string} tenantId

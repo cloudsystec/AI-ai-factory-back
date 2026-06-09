@@ -10,6 +10,7 @@ export const CURSOR_AGENT_JOB_KINDS = new Set([
   "scope-tasks-only",
   "develop",
   "task",
+  "railway-publish",
 ]);
 
 /**
@@ -35,11 +36,19 @@ export async function resolveJobExecutorUserId(tenantId, job) {
  * @param {number} workerSlot
  */
 export async function resolveCursorApiKeyForJob(tenantId, job, workerSlot) {
-  if (job.kind === "provision" || job.kind === "git-migrate" || !CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
+  if (job.kind === "provision" || job.kind === "git-migrate") {
     return null;
   }
-  if (!(await isBotReady(tenantId, workerSlot))) {
+  if (!CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
     return null;
   }
-  return getBotWorkerApiKeyDecrypted(tenantId, workerSlot);
+  if (await isBotReady(tenantId, workerSlot)) {
+    const key = await getBotWorkerApiKeyDecrypted(tenantId, workerSlot);
+    if (key) return key;
+  }
+  if (job.kind === "railway-publish") {
+    const platform = String(process.env.PLATFORM_CURSOR_ADMIN_API_KEY || "").trim();
+    if (platform) return platform;
+  }
+  return null;
 }

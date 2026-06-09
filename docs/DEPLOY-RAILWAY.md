@@ -1,5 +1,7 @@
 # Deploy no Railway — API e billing poller separados
 
+> **Publicação de projectos concluídos (clientes):** ver [DEPLOY-RAILWAY-CLIENT.md](./DEPLOY-RAILWAY-CLIENT.md).
+
 Dois **serviços** no projeto Railway, mesmo repositório, pastas distintas.
 
 | Serviço | Root Directory | Config file | Start | Health |

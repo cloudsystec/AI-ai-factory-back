@@ -155,6 +155,110 @@ export async function fetchServiceInstance(serviceId, environmentId) {
 }
 
 /**
+ * @param {unknown} err
+ */
+export function isRailwayAlreadyExistsError(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /already exists/i.test(msg);
+}
+
+/**
+ * @param {string} projectId
+ * @returns {Promise<Array<{ id: string, name: string }>>}
+ */
+export async function listProjectServices(projectId) {
+  const data = await railwayGraphql(
+    `query ProjectServices($projectId: String!) {
+      project(id: $projectId) {
+        services {
+          edges {
+            node {
+              id
+              name
+            }
+          }
+        }
+      }
+    }`,
+    { projectId }
+  );
+  return (data?.project?.services?.edges || [])
+    .map((e) => e?.node)
+    .filter((n) => n?.id && n?.name);
+}
+
+/**
+ * Cria serviço ou reutiliza existente com o mesmo nome (retry após falha parcial).
+ * @param {{ projectId: string, environmentId: string, name: string }} input
+ */
+export async function resolveOrCreateEmptyService(input) {
+  try {
+    return await createEmptyWorkerService(input);
+  } catch (e) {
+    if (!isRailwayAlreadyExistsError(e)) throw e;
+    const services = await listProjectServices(input.projectId);
+    const found = services.find((s) => s.name === input.name);
+    if (!found?.id) throw e;
+    return found;
+  }
+}
+
+/**
+ * @param {string} environmentId
+ * @param {string} serviceId
+ * @returns {Promise<Array<{ id: string, domain: string }>>}
+ */
+export async function listServiceRailwayDomains(environmentId, serviceId) {
+  const data = await railwayGraphql(
+    `query ServiceDomains($environmentId: String!, $serviceId: String!) {
+      domains(environmentId: $environmentId, serviceId: $serviceId) {
+        serviceDomains {
+          id
+          domain
+        }
+      }
+    }`,
+    { environmentId, serviceId }
+  );
+  const list = data?.domains?.serviceDomains;
+  return Array.isArray(list) ? list.filter((d) => d?.domain) : [];
+}
+
+/**
+ * @param {string} environmentId
+ * @param {string} serviceId
+ * @param {string|null|undefined} [fallbackUrl]
+ */
+export async function resolveRailwayPublicDomain(
+  environmentId,
+  serviceId,
+  fallbackUrl = null
+) {
+  if (fallbackUrl) {
+    const host = fallbackUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    return host ? { domain: host } : null;
+  }
+
+  try {
+    const created = await createRailwayPublicDomain(environmentId, serviceId);
+    if (created?.domain) return created;
+  } catch (e) {
+    if (!isRailwayAlreadyExistsError(e)) {
+      const existing = await listServiceRailwayDomains(environmentId, serviceId).catch(
+        () => []
+      );
+      if (existing[0]?.domain) return existing[0];
+    }
+  }
+
+  const existing = await listServiceRailwayDomains(environmentId, serviceId).catch(
+    () => []
+  );
+  if (existing[0]?.domain) return existing[0];
+  return null;
+}
+
+/**
  * Cria serviço vazio (sem repo) — evita build imediato; repo entra no staging.
  * @param {{ projectId: string, environmentId: string, name: string }} input
  */
@@ -414,31 +518,171 @@ export async function deployServiceInstance(environmentId, serviceId) {
 }
 
 /**
- * Redeploy após volume; não falha se Railway ainda está "Applying changes".
- * O commit staged já dispara deploy inicial.
+ * @param {{ projectId: string, serviceId: string, environmentId?: string, first?: number }} input
+ * @returns {Promise<Array<{ id: string, status: string, createdAt?: string }>>}
+ */
+export async function listServiceDeployments(input) {
+  const first = input.first ?? 5;
+  /** @type {Record<string, string>} */
+  const gqlInput = {
+    projectId: input.projectId,
+    serviceId: input.serviceId,
+  };
+  if (input.environmentId) {
+    gqlInput.environmentId = input.environmentId;
+  }
+
+  const data = await railwayGraphql(
+    `query Deployments($first: Int!, $input: DeploymentListInput!) {
+      deployments(first: $first, input: $input) {
+        edges {
+          node {
+            id
+            status
+            createdAt
+          }
+        }
+      }
+    }`,
+    { first, input: gqlInput }
+  );
+
+  return (data?.deployments?.edges || [])
+    .map((e) => e?.node)
+    .filter((n) => n?.id);
+}
+
+/**
+ * @param {string} deploymentId
+ * @param {{ limit?: number, filter?: string }} [opts]
+ * @returns {Promise<Array<{ message?: string, timestamp?: string, severity?: string }>>}
+ */
+export async function fetchBuildLogs(deploymentId, opts = {}) {
+  const limit = opts.limit ?? 500;
+  const filter = opts.filter ?? "";
+
+  try {
+    const data = await railwayGraphql(
+      `query BuildLogs($deploymentId: String!, $limit: Int!, $filter: String) {
+        buildLogs(deploymentId: $deploymentId, limit: $limit, filter: $filter) {
+          message
+          timestamp
+          severity
+        }
+      }`,
+      { deploymentId, limit, filter }
+    );
+    return data?.buildLogs || [];
+  } catch {
+    const data = await railwayGraphql(
+      `query BuildLogsUnion($deploymentId: String!, $limit: Int!, $filter: String) {
+        buildLogs(deploymentId: $deploymentId, limit: $limit, filter: $filter) {
+          __typename
+          ... on Log {
+            message
+            timestamp
+            severity
+          }
+        }
+      }`,
+      { deploymentId, limit, filter }
+    );
+    return data?.buildLogs || [];
+  }
+}
+
+const BUILD_LOG_ERROR_RE =
+  /error|failed|fatal|not found|exit code|cannot|denied|ENOENT|no such file/i;
+
+/**
+ * Extrai trecho útil dos logs de build (erros + cauda).
+ * @param {Array<{ message?: string }>} logs
+ * @param {number} [maxLines]
+ */
+export function formatBuildLogSnippet(logs, maxLines = 80) {
+  const lines = (logs || [])
+    .map((l) => String(l?.message || "").trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "";
+
+  const errorLines = lines.filter((l) => BUILD_LOG_ERROR_RE.test(l));
+  const tail = lines.slice(-50);
+  const merged = [...new Set([...errorLines.slice(-30), ...tail])];
+  return merged.slice(-maxLines).join("\n");
+}
+
+/**
+ * Aguarda deployment terminar (SUCCESS/FAILED/CRASHED) ou timeout.
+ * @param {{ projectId: string, serviceId: string, environmentId?: string, attempts?: number, delayMs?: number }} input
+ */
+export async function waitForLatestDeploymentOutcome(input) {
+  const attempts = input.attempts ?? 24;
+  const delayMs = input.delayMs ?? 10_000;
+  /** @type {{ id: string, status: string } | null} */
+  let latest = null;
+
+  for (let i = 0; i < attempts; i += 1) {
+    const deployments = await listServiceDeployments({
+      projectId: input.projectId,
+      serviceId: input.serviceId,
+      environmentId: input.environmentId,
+      first: 1,
+    });
+    latest = deployments[0] || null;
+    if (!latest) {
+      if (i < attempts - 1) await sleep(delayMs);
+      continue;
+    }
+    const terminal = ["SUCCESS", "FAILED", "CRASHED", "SKIPPED"].includes(
+      latest.status
+    );
+    if (terminal) return latest;
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return latest;
+}
+
+/**
+ * Redeploy após volume ou commit staged; tolera Railway ainda a processar.
+ * O commit staged / push Git já podem disparar deploy — falha "not found" não é fatal.
  * @param {string} environmentId
  * @param {string} serviceId
+ * @param {{ waitAttempts?: number, waitDelayMs?: number, postCommitDelayMs?: number, deployAttempts?: number, deployDelayMs?: number }} [opts]
  */
-export async function triggerWorkerRedeploy(environmentId, serviceId) {
+export async function triggerWorkerRedeploy(environmentId, serviceId, opts = {}) {
+  const deployAttempts = opts.deployAttempts ?? 4;
+  const deployDelayMs = opts.deployDelayMs ?? 5000;
+
   try {
     await waitForServiceInstance(serviceId, environmentId, {
-      attempts: 10,
-      delayMs: 3000,
+      attempts: opts.waitAttempts ?? 10,
+      delayMs: opts.waitDelayMs ?? 3000,
     });
   } catch {
     return { skipped: true, reason: "instance_not_ready" };
   }
 
-  try {
-    const deploymentId = await deployServiceInstance(environmentId, serviceId);
-    return { skipped: false, deploymentId };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/not found|processing|Problem processing/i.test(msg)) {
-      return { skipped: true, reason: msg };
-    }
-    throw e;
+  if (opts.postCommitDelayMs && opts.postCommitDelayMs > 0) {
+    await sleep(opts.postCommitDelayMs);
   }
+
+  for (let i = 0; i < deployAttempts; i++) {
+    try {
+      const deploymentId = await deployServiceInstance(environmentId, serviceId);
+      return { skipped: false, deploymentId };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/not found|processing|Problem processing|INTERNAL_SERVER_ERROR/i.test(msg)) {
+        if (i < deployAttempts - 1) {
+          await sleep(deployDelayMs);
+          continue;
+        }
+        return { skipped: true, reason: msg };
+      }
+      throw e;
+    }
+  }
+  return { skipped: true, reason: "deploy_retries_exhausted" };
 }
 
 /**
@@ -526,4 +770,302 @@ export function assertRailwayConfig() {
     throw new Error(`Railway não configurado: ${missing.join(", ")}`);
   }
   return cfg;
+}
+
+export function clientRailwayConfig() {
+  return {
+    apiToken: Boolean(process.env.RAILWAY_API_TOKEN),
+    workspaceId: process.env.RAILWAY_WORKSPACE_ID || "",
+  };
+}
+
+export function assertClientRailwayConfig() {
+  const cfg = clientRailwayConfig();
+  const missing = [];
+  if (!cfg.apiToken) missing.push("RAILWAY_API_TOKEN");
+  if (!cfg.workspaceId) missing.push("RAILWAY_WORKSPACE_ID");
+  if (missing.length) {
+    throw Object.assign(
+      new Error(`Railway client deploy não configurado: ${missing.join(", ")}`),
+      { status: 503, code: "railway_not_configured" }
+    );
+  }
+  return cfg;
+}
+
+/**
+ * @param {string} name
+ * @param {string} workspaceId
+ */
+export async function createRailwayProject(name, workspaceId) {
+  const data = await railwayGraphql(
+    `mutation ProjectCreate($input: ProjectCreateInput!) {
+      projectCreate(input: $input) { id name }
+    }`,
+    {
+      input: {
+        name,
+        workspaceId,
+      },
+    }
+  );
+  const project = data?.projectCreate;
+  if (!project?.id) {
+    throw new Error("projectCreate não devolveu id");
+  }
+  return project;
+}
+
+/**
+ * @param {string} projectId
+ */
+export async function getProjectDefaultEnvironment(projectId) {
+  const data = await railwayGraphql(
+    `query ProjectEnvironments($projectId: String!) {
+      project(id: $projectId) {
+        id
+        environments {
+          edges {
+            node {
+              id
+              name
+              isEphemeral
+            }
+          }
+        }
+      }
+    }`,
+    { projectId }
+  );
+  const edges = data?.project?.environments?.edges || [];
+  const nodes = edges.map((e) => e?.node).filter(Boolean);
+  const production =
+    nodes.find((n) => String(n.name).toLowerCase() === "production") ||
+    nodes.find((n) => !n.isEphemeral) ||
+    nodes[0];
+  if (!production?.id) {
+    throw new Error("Ambiente Railway não encontrado no project");
+  }
+  return production;
+}
+
+/**
+ * @param {string | undefined} rootDirectory
+ * @returns {string|undefined}
+ */
+export function normalizeRootDirectory(rootDirectory) {
+  const r = String(rootDirectory || "")
+    .trim()
+    .replace(/^\.\//, "");
+  if (!r || r === ".") return undefined;
+  return r;
+}
+
+/**
+ * @param {object} config
+ * @param {"source"|"config"} phase
+ */
+export function buildClientServicePatch(config, phase) {
+  /** @type {Record<string, unknown>} */
+  const patch = {};
+
+  if (phase === "source") {
+    if (config.isCreated === true) {
+      patch.isCreated = true;
+    }
+    if (config.includeSource !== false && config.repo) {
+      patch.source = {
+        repo: config.repo,
+        branch: config.branch || "main",
+      };
+    }
+    return patch;
+  }
+
+  const vars = toStagedVariableMap(config.variables || {});
+  if (Object.keys(vars).length > 0) {
+    patch.variables = vars;
+  }
+
+  const root = normalizeRootDirectory(config.rootDirectory);
+  if (root) {
+    patch.rootDirectory = root;
+  }
+
+  if (config.dockerfilePath) {
+    patch.build = {
+      builder: "DOCKERFILE",
+      dockerfilePath: String(config.dockerfilePath).replace(/^\.\//, ""),
+    };
+  }
+
+  return patch;
+}
+
+async function stageEnvironmentServicePatch(
+  environmentId,
+  serviceId,
+  servicePatch,
+  merge = true
+) {
+  if (!servicePatch || Object.keys(servicePatch).length === 0) return;
+  await railwayGraphql(
+    `mutation StageClient($environmentId: String!, $input: EnvironmentConfig!, $merge: Boolean) {
+      environmentStageChanges(
+        environmentId: $environmentId
+        input: $input
+        merge: $merge
+      ) { id }
+    }`,
+    {
+      environmentId,
+      merge,
+      input: { services: { [serviceId]: servicePatch } },
+    }
+  );
+}
+
+/**
+ * Configura repo + Dockerfile + env via staged changes (2 fases: source → build).
+ * @param {{
+ *   environmentId: string,
+ *   serviceId: string,
+ *   repo: string,
+ *   branch?: string,
+ *   variables?: Record<string, string>,
+ *   rootDirectory?: string,
+ *   dockerfilePath?: string,
+ *   includeSource?: boolean,
+ *   sourceCommitMessage?: string,
+ *   configCommitMessage?: string,
+ * }} input
+ */
+export async function applyClientServiceConfig(input) {
+  const { environmentId, serviceId } = input;
+  const branch = input.branch || "main";
+
+  const { instance } = await railwayStep("fetchServiceInstance", () =>
+    fetchServiceInstance(serviceId, environmentId)
+  );
+
+  const isCreated = needsServiceInstanceCreate(instance);
+  const includeSource =
+    input.includeSource ??
+    !serviceInstanceHasRepo(instance, input.repo);
+
+  const baseConfig = {
+    repo: input.repo,
+    branch,
+    variables: input.variables || {},
+    rootDirectory: input.rootDirectory,
+    dockerfilePath: input.dockerfilePath || "Dockerfile",
+    isCreated,
+    includeSource,
+  };
+
+  if (isCreated || includeSource) {
+    const sourcePatch = buildClientServicePatch(baseConfig, "source");
+    if (Object.keys(sourcePatch).length > 0) {
+      await railwayStep("environmentStageChanges(source)", () =>
+        stageEnvironmentServicePatch(
+          environmentId,
+          serviceId,
+          sourcePatch,
+          true
+        )
+      );
+      await railwayStep("environmentPatchCommitStaged(source)", () =>
+        commitStagedEnvironment(
+          environmentId,
+          input.sourceCommitMessage || "DevForLess: connect deploy repo",
+          { skipDeploys: true }
+        )
+      );
+      await railwayStep("waitForServiceInstance(source)", () =>
+        waitForServiceInstance(serviceId, environmentId, {
+          attempts: 20,
+          delayMs: 2000,
+        })
+      );
+    }
+  }
+
+  const configPatch = buildClientServicePatch(baseConfig, "config");
+  if (Object.keys(configPatch).length > 0) {
+    await railwayStep("environmentStageChanges(config)", () =>
+      stageEnvironmentServicePatch(
+        environmentId,
+        serviceId,
+        configPatch,
+        true
+      )
+    );
+  }
+}
+
+/**
+ * @deprecated Prefer applyClientServiceConfig — mantido para chamadas directas.
+ */
+export async function stageClientServiceConfig(environmentId, serviceId, config) {
+  const sourcePatch = buildClientServicePatch(
+    {
+      ...config,
+      isCreated: config.isCreated,
+      includeSource: config.includeSource,
+    },
+    "source"
+  );
+  const configPatch = buildClientServicePatch(config, "config");
+  const combined = { ...sourcePatch, ...configPatch };
+  await stageEnvironmentServicePatch(environmentId, serviceId, combined, true);
+}
+
+/**
+ * @param {string} environmentId
+ * @param {string} serviceId
+ */
+export async function createRailwayPublicDomain(environmentId, serviceId) {
+  const data = await railwayGraphql(
+    `mutation DomainCreate($input: ServiceDomainCreateInput!) {
+      serviceDomainCreate(input: $input) {
+        id
+        domain
+      }
+    }`,
+    {
+      input: {
+        environmentId,
+        serviceId,
+        targetPort: null,
+      },
+    }
+  );
+  return data?.serviceDomainCreate ?? null;
+}
+
+/**
+ * @param {{ projectId: string, environmentId: string, name?: string }} input
+ */
+export async function createPostgresService(input) {
+  const name = input.name || "postgres";
+  const svc = await createEmptyWorkerService({
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    name,
+  });
+  return svc;
+}
+
+/**
+ * Serviço Redis (plugin/template manual no Railway — placeholder para wiring de env).
+ * @param {{ projectId: string, environmentId: string, name?: string }} input
+ */
+export async function createRedisService(input) {
+  const name = input.name || "redis";
+  const svc = await createEmptyWorkerService({
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    name,
+  });
+  return svc;
 }

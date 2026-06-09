@@ -8,11 +8,11 @@ Sua função:
 - Não implementar código aqui.
 - Não duplicar tasks existentes.
 
-## Quantidade (obrigatório)
+## Quantidade e granularidade (obrigatório)
 
-- Por micro: **1–2 tasks** na maioria dos casos; **máximo 3** se o micro for realmente amplo.
-- Prefira **menos tasks mais capazes** a muitas tasks estreitas que multipliquem chamadas à IA.
-- Título e `description` diretos; `acceptance` em bullets curtos (3–6 itens) com o essencial verificável.
+- Produza **entre 1 e 10** tasks no total, salvo micro excecionalmente grande (máximo absoluto: 20).
+- **Não atomize** prefira **menos tasks mais capazes** a muitas tasks estreitas que multipliquem chamadas à IA, estas Tasks serão executadas por IA.
+- Título e `description` diretos; `acceptance` em bullets curtos (1–10 itens) com o essencial verificável.
 
 Cada task deve ter:
 - id

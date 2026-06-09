@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { query } from "../db/pool.js";
+import { log } from "../lib/logger.js";
 import { requireWorker } from "../middleware/auth.js";
 import {
   getEffectiveAgentConfigForProject,
@@ -39,7 +40,7 @@ import {
   listWorkersStatus,
   workerSlotFromWorkerId,
 } from "../services/worker-bot-service.js";
-import { parseWorkerSlot } from "../services/job-service.js";
+import { parseWorkerSlot, resolveBillingJobIdForProjectSlot1 } from "../services/job-service.js";
 import { syncWorkerRuntime } from "../services/worker-runtime-service.js";
 import {
   claimPrResolutionForWorker,
@@ -124,6 +125,7 @@ workerRouter.post("/claim", async (req, res) => {
   );
   let cursorApiKey = null;
   let botEmail = null;
+  let billingJobId = job.id;
   if (CURSOR_AGENT_JOB_KINDS.has(job.kind)) {
     cursorApiKey = await resolveCursorApiKeyForJob(
       req.workerTenantId,
@@ -131,6 +133,15 @@ workerRouter.post("/claim", async (req, res) => {
       workerSlot
     );
     botEmail = await getBotEmailForSlot(req.workerTenantId, workerSlot);
+    if (job.kind === "railway-publish") {
+      billingJobId = await resolveBillingJobIdForProjectSlot1(
+        req.workerTenantId,
+        job.project_slug,
+        job.id
+      );
+      botEmail =
+        (await getBotEmailForSlot(req.workerTenantId, 1)) || botEmail;
+    }
     if (!cursorApiKey) {
       await completeJob(req.workerTenantId, job.id, {
         status: "failed",
@@ -148,10 +159,17 @@ workerRouter.post("/claim", async (req, res) => {
 
   let githubInstallationToken = null;
   try {
-    githubInstallationToken = await getGitHubTokenForProject(
-      req.workerTenantId,
-      job.project_slug
-    );
+    if (job.kind === "railway-publish") {
+      const { getPlatformGitHubToken } = await import(
+        "../services/deploy-git-service.js"
+      );
+      githubInstallationToken = (await getPlatformGitHubToken()).token;
+    } else {
+      githubInstallationToken = await getGitHubTokenForProject(
+        req.workerTenantId,
+        job.project_slug
+      );
+    }
   } catch {
     githubInstallationToken = null;
   }
@@ -180,6 +198,7 @@ workerRouter.post("/claim", async (req, res) => {
     botEmail,
     job: {
       id: job.id,
+      billingJobId,
       projectSlug: job.project_slug,
       kind: job.kind,
       macroId: job.macro_id,
@@ -252,6 +271,148 @@ workerRouter.post("/projects/:slug/git/migrate-complete", async (req, res) => {
     type: "dashboard",
     project: slug,
     reason: "git-migrate",
+  });
+  res.json({ ok: true });
+});
+
+workerRouter.post("/projects/:slug/deploy-repo/ensure", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  try {
+    const { ensureDeployRepository } = await import(
+      "../services/deploy-git-service.js"
+    );
+    const result = await ensureDeployRepository(req.workerTenantId, slug);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+    });
+  }
+});
+
+workerRouter.get("/projects/:slug/railway-deployment", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  const { getRailwayDeploymentRow } = await import(
+    "../services/project-railway-service.js"
+  );
+  const row = await getRailwayDeploymentRow(req.workerTenantId, slug);
+  res.json({
+    status: row?.status ?? "idle",
+    publicUrl: row?.public_url ?? null,
+    railwayProjectId: row?.railway_project_id ?? null,
+    railwayEnvironmentId: row?.railway_environment_id ?? null,
+    deployRepoFullName: row?.deploy_repo_full_name ?? null,
+  });
+});
+
+workerRouter.get("/projects/:slug/railway-build-logs", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  try {
+    const { getRailwayBuildDiagnostics } = await import(
+      "../services/project-railway-service.js"
+    );
+    const diag = await getRailwayBuildDiagnostics(req.workerTenantId, slug);
+    res.json(diag);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+    });
+  }
+});
+
+workerRouter.post("/projects/:slug/railway-provision", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  try {
+    const { provisionFromRepo } = await import(
+      "../services/project-railway-service.js"
+    );
+    const result = await provisionFromRepo(req.workerTenantId, slug, req.body ?? {});
+    broadcast(req.workerTenantId, {
+      type: "dashboard",
+      project: slug,
+      reason: "railway-publish",
+    });
+    res.json(result);
+  } catch (error) {
+    const { upsertRailwayDeployment, getRailwayDeploymentRow } = await import(
+      "../services/project-railway-service.js"
+    );
+    const row = await getRailwayDeploymentRow(req.workerTenantId, slug);
+    const publicUrl = row?.public_url || null;
+
+    if (publicUrl) {
+      log.warn("Railway provision erro parcial — URL existente", {
+        slug,
+        error: error.message,
+        publicUrl,
+      });
+      await upsertRailwayDeployment(req.workerTenantId, slug, {
+        last_error: null,
+      }).catch(() => {});
+      return res.json({
+        provisioned: true,
+        publicUrl,
+        partial: true,
+        warning: error.message || String(error),
+      });
+    }
+
+    await upsertRailwayDeployment(req.workerTenantId, slug, {
+      status: "failed",
+      last_error: error.message || String(error),
+    }).catch(() => {});
+    res.status(error.status || 500).json({
+      error: error.message || String(error),
+      code: error.code,
+      publicUrl: null,
+    });
+  }
+});
+
+workerRouter.post("/projects/:slug/railway-publish/outcome", async (req, res) => {
+  const slug = parseSlugParam(req, res);
+  if (!slug) return;
+  const { status, readiness, error } = req.body ?? {};
+  const { upsertRailwayDeployment } = await import(
+    "../services/project-railway-service.js"
+  );
+
+  const inProgress = ["analyzing", "syncing", "provisioning", "verifying"].includes(
+    status
+  );
+
+  /** @type {Record<string, unknown>} */
+  const patch = { status: status || "analyzing" };
+
+  if (status === "deployed") {
+    patch.deployed_at = new Date();
+    patch.last_error = null;
+  } else if (status === "failed") {
+    patch.last_error =
+      error ||
+      "Não foi possível publicar a aplicação automaticamente. Tente novamente.";
+  } else if (inProgress) {
+    patch.last_error = null;
+  } else if (error) {
+    patch.last_error = error;
+  }
+
+  if (readiness && typeof readiness === "object" && !inProgress && status !== "deployed") {
+    patch.verdict = readiness.verdict;
+    patch.topology = readiness.topology;
+    patch.blockers = readiness.blockers || [];
+  }
+
+  await upsertRailwayDeployment(req.workerTenantId, slug, patch);
+  broadcast(req.workerTenantId, {
+    type: "dashboard",
+    project: slug,
+    reason: "railway-publish",
   });
   res.json({ ok: true });
 });
