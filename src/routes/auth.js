@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { buildCapabilities } from "../lib/capabilities.js";
 import { verifyPassword } from "../lib/password.js";
 import {
+  completeUserTutorial,
   getCapabilitiesForUser,
   getTenantUserQuota,
   loadUserByEmail,
@@ -63,6 +64,7 @@ authRouter.post("/login", async (req, res) => {
     tenantName: user.tenant_name || "",
     userId: user.id,
     role: user.role,
+    tutorialPending: Boolean(user.tutorial_pending),
     capabilities,
   });
 });
@@ -76,7 +78,23 @@ authRouter.get("/me", requireAuth, attachCapabilities, requireActivePlan, async 
     tenantId: req.user.tenantId,
     tenantName: req.user.tenantName || req.tenant.name || "",
     role: req.user.role,
+    tutorialPending: Boolean(req.user.tutorialPending),
     capabilities: caps,
     planId: req.tenant.plan_id,
   });
 });
+
+authRouter.post(
+  "/tutorial/complete",
+  requireAuth,
+  attachCapabilities,
+  requireActivePlan,
+  async (req, res) => {
+    try {
+      const result = await completeUserTutorial(req.user.id);
+      res.json(result);
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  }
+);

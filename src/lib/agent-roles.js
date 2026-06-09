@@ -37,3 +37,5 @@ export function roleKeyForAgentPath(relativePath) {
 export function allRoleKeys() {
   return AGENT_ROLES.map((r) => r.roleKey);
 }
+
+export const GLOBAL_AGENT_ROLE_KEY = "global";

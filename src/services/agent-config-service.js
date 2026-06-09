@@ -212,13 +212,32 @@ export async function upsertProjectAgentOverride(
 /**
  * @param {string} tenantId
  * @param {string} projectSlug
+ * @param {{ preserveRoleKeys?: string[] }} [options]
  */
-export async function resetProjectAgentsFromTemplates(tenantId, projectSlug) {
-  await query(
-    `DELETE FROM project_agent_overrides WHERE tenant_id = $1 AND project_slug = $2`,
-    [tenantId, projectSlug]
+export async function resetProjectAgentsFromTemplates(
+  tenantId,
+  projectSlug,
+  options = {}
+) {
+  const preserve = new Set(options.preserveRoleKeys || []);
+  await ensureAgentTemplatesComplete();
+
+  if (preserve.size === 0) {
+    await query(
+      `DELETE FROM project_agent_overrides WHERE tenant_id = $1 AND project_slug = $2`,
+      [tenantId, projectSlug]
+    );
+    await cloneAgentTemplatesToProject(tenantId, projectSlug);
+    return;
+  }
+
+  const { rows: templates } = await query(
+    "SELECT role_key, content FROM agent_templates"
   );
-  await cloneAgentTemplatesToProject(tenantId, projectSlug);
+  for (const t of templates) {
+    if (preserve.has(t.role_key)) continue;
+    await upsertProjectAgentOverride(tenantId, projectSlug, t.role_key, t.content);
+  }
 }
 
 /**

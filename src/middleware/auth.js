@@ -30,6 +30,7 @@ export async function requireAuth(req, res, next) {
         tenantId: user.tenant_id,
         tenantName: user.tenant_name || "",
         role: user.role,
+        tutorialPending: Boolean(user.tutorial_pending),
       };
     } else if (email && tenantId) {
       req.user = { id: null, email, tenantId, role: payload.role || "auditor" };

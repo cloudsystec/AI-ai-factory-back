@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { allRoleKeys } from "../lib/agent-roles.js";
+import { allRoleKeys, GLOBAL_AGENT_ROLE_KEY } from "../lib/agent-roles.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
+import { isPlatformAdminEmail } from "../lib/platform-admin-emails.js";
 import { query } from "../db/pool.js";
 import { requireActivePlan, requireAuth } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
@@ -29,6 +30,20 @@ function assertRoleKey(roleKey) {
   }
 }
 
+function canEditGlobalAgent(email) {
+  return isPlatformAdminEmail(email);
+}
+
+function assertCanEditAgentRole(email, roleKey) {
+  if (roleKey === GLOBAL_AGENT_ROLE_KEY && !canEditGlobalAgent(email)) {
+    const err = new Error(
+      "O agente Global só pode ser alterado por um administrador da plataforma."
+    );
+    err.status = 403;
+    throw err;
+  }
+}
+
 async function assertTenantProject(tenantId, slug) {
   if (!isValidProjectSlug(slug)) {
     const err = new Error("slug de projeto inválido");
@@ -50,8 +65,15 @@ projectAgentsRouter.get("/", async (req, res) => {
   try {
     const slug = req.params.slug;
     await assertTenantProject(req.user.tenantId, slug);
-    const overrides = await listProjectAgentOverrides(req.user.tenantId, slug);
-    res.json({ overrides });
+    const canEditGlobal = canEditGlobalAgent(req.user.email);
+    let overrides = await listProjectAgentOverrides(req.user.tenantId, slug);
+    if (!canEditGlobal) {
+      overrides = overrides.filter((r) => r.role_key !== GLOBAL_AGENT_ROLE_KEY);
+    }
+    res.json({
+      overrides,
+      canEditGlobal,
+    });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -60,6 +82,7 @@ projectAgentsRouter.get("/", async (req, res) => {
 projectAgentsRouter.put("/:roleKey", async (req, res) => {
   try {
     assertRoleKey(req.params.roleKey);
+    assertCanEditAgentRole(req.user.email, req.params.roleKey);
     const slug = req.params.slug;
     await assertTenantProject(req.user.tenantId, slug);
     const content = req.body?.content;
@@ -82,7 +105,10 @@ projectAgentsRouter.post("/reset", async (req, res) => {
   try {
     const slug = req.params.slug;
     await assertTenantProject(req.user.tenantId, slug);
-    await resetProjectAgentsFromTemplates(req.user.tenantId, slug);
+    const preserveRoleKeys = canEditGlobalAgent(req.user.email)
+      ? []
+      : [GLOBAL_AGENT_ROLE_KEY];
+    await resetProjectAgentsFromTemplates(req.user.tenantId, slug, { preserveRoleKeys });
     const overrides = await listProjectAgentOverrides(req.user.tenantId, slug);
     res.json({ ok: true, overrides });
   } catch (e) {
@@ -103,6 +129,11 @@ projectAgentsRouter.post("/help/chat", async (req, res) => {
   try {
     const slug = req.params.slug;
     await assertTenantProject(req.user.tenantId, slug);
+    const roleKey = String(req.body?.roleKey ?? "").trim();
+    if (roleKey) {
+      assertRoleKey(roleKey);
+      assertCanEditAgentRole(req.user.email, roleKey);
+    }
     const result = await runAgentConfigHelpChat(
       req.user.tenantId,
       req.user.id ?? null,

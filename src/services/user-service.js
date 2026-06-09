@@ -121,12 +121,13 @@ export async function createTenantUser(tenantId, input, opts = {}) {
   }
 
   const passwordHash = hashPassword(password);
+  const tutorialPending = role === "executor";
   try {
     const { rows } = await query(
-      `INSERT INTO users (tenant_id, email, role, password_hash)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (tenant_id, email, role, password_hash, tutorial_pending)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, email, role, password_hash, cursor_api_key_encrypted, created_at`,
-      [tenantId, email, role, passwordHash]
+      [tenantId, email, role, passwordHash, tutorialPending]
     );
     return userToPublic(rows[0]);
   } catch (e) {
@@ -274,7 +275,7 @@ export async function getExecutorCursorApiKeyDecrypted(userId) {
  */
 export async function loadSessionUser(userId) {
   const { rows } = await query(
-    `SELECT u.id, u.email, u.role, u.tenant_id,
+    `SELECT u.id, u.email, u.role, u.tenant_id, u.tutorial_pending,
             t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
@@ -289,7 +290,7 @@ export async function loadSessionUser(userId) {
  */
 export async function loadUserByEmail(email) {
   const { rows } = await query(
-    `SELECT u.id, u.email, u.role, u.tenant_id, u.password_hash,
+    `SELECT u.id, u.email, u.role, u.tenant_id, u.password_hash, u.tutorial_pending,
             t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
@@ -297,6 +298,21 @@ export async function loadUserByEmail(email) {
     [email.trim().toLowerCase()]
   );
   return rows[0] || null;
+}
+
+/**
+ * @param {string} userId
+ */
+export async function completeUserTutorial(userId) {
+  const { rows } = await query(
+    `UPDATE users SET tutorial_pending = false WHERE id = $1
+     RETURNING id, tutorial_pending`,
+    [userId]
+  );
+  if (!rows[0]) {
+    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+  }
+  return { tutorialPending: false };
 }
 
 /**
