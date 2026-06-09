@@ -69,10 +69,15 @@ export async function getProjectGitRow(tenantId, slug) {
  */
 export async function listProjectsWithGit(tenantId) {
   const { rows } = await query(
-    `SELECT slug, name, scope_md, github_default_branch, github_repo_full_name,
-            git_status, github_tech_lead_branch, github_repo_mode, git_last_error,
-            created_at, status, completed_at
-     FROM projects WHERE tenant_id = $1 ORDER BY slug`,
+    `SELECT p.slug, p.name, p.scope_md, p.github_default_branch, p.github_repo_full_name,
+            p.git_status, p.github_tech_lead_branch, p.github_repo_mode, p.git_last_error,
+            p.created_at, p.status, p.completed_at,
+            s.scope_state_json
+     FROM projects p
+     LEFT JOIN project_dashboard_snapshots s
+       ON s.tenant_id = p.tenant_id AND s.project_slug = p.slug
+     WHERE p.tenant_id = $1
+     ORDER BY p.slug`,
     [tenantId]
   );
   return rows.map((r) => toPublicProjectGit(r));

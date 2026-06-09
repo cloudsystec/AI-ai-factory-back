@@ -417,6 +417,20 @@ export async function reconcileJobCalls(tenantId, jobId, payload) {
 
 /**
  * @param {string} tenantId
+ */
+export async function countBillingCallsForTenant(tenantId) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS total
+     FROM billing_ai_calls c
+     WHERE c.tenant_id = $1
+       AND c.source IS DISTINCT FROM 'skipped'`,
+    [tenantId]
+  );
+  return rows[0]?.total || 0;
+}
+
+/**
+ * @param {string} tenantId
  * @param {number} [limit]
  */
 export async function listRecentBillingCalls(tenantId, limit = 50) {

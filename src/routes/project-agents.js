@@ -9,6 +9,10 @@ import {
   resetProjectAgentsFromTemplates,
   upsertProjectAgentOverride,
 } from "../services/agent-config-service.js";
+import {
+  getAgentConfigHelpStatus,
+  runAgentConfigHelpChat,
+} from "../services/agent-config-help-service.js";
 
 export const projectAgentsRouter = Router({ mergeParams: true });
 projectAgentsRouter.use(
@@ -83,5 +87,33 @@ projectAgentsRouter.post("/reset", async (req, res) => {
     res.json({ ok: true, overrides });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+projectAgentsRouter.get("/help/status", async (req, res) => {
+  try {
+    const status = await getAgentConfigHelpStatus(req.user.tenantId);
+    res.json(status);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+projectAgentsRouter.post("/help/chat", async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    await assertTenantProject(req.user.tenantId, slug);
+    const result = await runAgentConfigHelpChat(
+      req.user.tenantId,
+      req.user.id ?? null,
+      slug,
+      req.body ?? {}
+    );
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message || String(e),
+      code: e.code ?? undefined,
+    });
   }
 });

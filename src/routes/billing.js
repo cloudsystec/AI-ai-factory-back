@@ -5,8 +5,12 @@ import {
   mapCallStatusForUi,
 } from "../lib/billing-display.js";
 import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
-import { listRecentBillingCalls } from "../services/billing-call-service.js";
+import {
+  countBillingCallsForTenant,
+  listRecentBillingCalls,
+} from "../services/billing-call-service.js";
 import { getProjectBillingSummary } from "../services/project-billing-service.js";
+import { getUsageEventsPayload } from "../services/billing-usage-service.js";
 import { listActiveJobsForTenant } from "../services/job-service.js";
 import { getTenantUserQuota } from "../services/user-service.js";
 import { listWorkersStatus } from "../services/worker-bot-service.js";
@@ -21,7 +25,10 @@ billingRouter.get("/summary", async (req, res) => {
   const used = Math.max(0, pool - balance);
   const pct = pool > 0 ? Math.round((used / pool) * 100) : 0;
 
-  const events = await listRecentBillingCalls(req.user.tenantId, 50);
+  const [events, usageEventsTotal] = await Promise.all([
+    listRecentBillingCalls(req.user.tenantId, 50),
+    countBillingCallsForTenant(req.user.tenantId),
+  ]);
   const cotation = Number(t.cotation) || 5.1;
 
   const quota = await getTenantUserQuota(req.user.tenantId);
@@ -51,6 +58,7 @@ billingRouter.get("/summary", async (req, res) => {
     usersMax: quota?.usersMax ?? t.users_max,
     usersUsed: quota?.usersUsed ?? 0,
     workerStatus: t.worker_status,
+    usageEventsTotal,
     recentUsage: events.map((ev) => ({
       execution_id: ev.execution_id,
       job_id: ev.job_id,
@@ -64,6 +72,38 @@ billingRouter.get("/summary", async (req, res) => {
     activeJobs,
     workersStatus: workersStatus.workers,
     slotsMax: workersStatus.slotsMax,
+  });
+});
+
+billingRouter.get("/usage-events", async (req, res) => {
+  const agent = req.query.agent;
+  const payload = await getUsageEventsPayload({
+    tenantId: req.user.tenantId,
+    agentFilter: agent,
+  });
+  const t = req.tenant;
+  res.json({
+    ...payload,
+    cotation: Number(t.cotation) || 5.1,
+  });
+});
+
+billingRouter.get("/projects/:slug/usage-events", async (req, res) => {
+  const slug = String(req.params.slug || "").trim();
+  if (!slug) {
+    return res.status(400).json({ error: "slug obrigatório" });
+  }
+  const agent = req.query.agent;
+  const payload = await getUsageEventsPayload({
+    tenantId: req.user.tenantId,
+    projectSlug: slug,
+    agentFilter: agent,
+  });
+  const t = req.tenant;
+  res.json({
+    ...payload,
+    projectSlug: slug,
+    cotation: Number(t.cotation) || 5.1,
   });
 });
 

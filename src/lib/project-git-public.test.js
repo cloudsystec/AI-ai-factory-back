@@ -4,6 +4,7 @@ import {
   isClientGitRepoMode,
   isManagedGitRepoMode,
   toPublicProjectGit,
+  deriveProjectLifecycleStatus,
 } from "./project-git-public.js";
 
 describe("project-git-public", () => {
@@ -47,5 +48,28 @@ describe("project-git-public", () => {
   it("isManagedGitRepoMode", () => {
     assert.equal(isManagedGitRepoMode("managed"), true);
     assert.equal(isManagedGitRepoMode("client"), false);
+  });
+
+  it("deriveProjectLifecycleStatus", () => {
+    assert.equal(deriveProjectLifecycleStatus("completed", null), "completed");
+    assert.equal(deriveProjectLifecycleStatus("active", null), "not_started");
+    assert.equal(
+      deriveProjectLifecycleStatus("active", { microCount: 0 }),
+      "not_started"
+    );
+    assert.equal(
+      deriveProjectLifecycleStatus("active", {
+        microCount: 3,
+        scopeSteps: [{ key: "macro", state: "done" }],
+      }),
+      "started"
+    );
+    assert.equal(
+      deriveProjectLifecycleStatus("active", {
+        microCount: 0,
+        scopeSteps: [{ key: "macro", state: "done" }],
+      }),
+      "not_started"
+    );
   });
 });

@@ -16,12 +16,36 @@ export function isManagedGitRepoMode(repoMode) {
 }
 
 /**
+ * Azul escuro: sem micros (escopo macro ainda editável).
+ * Amarelo: já tem micros, pipeline em curso.
+ * Verde: projecto finalizado.
+ *
+ * @param {string|null|undefined} projectStatus
+ * @param {unknown} scopeStateJson
+ * @returns {'not_started'|'started'|'completed'}
+ */
+export function deriveProjectLifecycleStatus(projectStatus, scopeStateJson) {
+  if (projectStatus === "completed") return "completed";
+
+  const scope =
+    scopeStateJson && typeof scopeStateJson === "object" ? scopeStateJson : null;
+  if (scope?.projectCompleted) return "completed";
+
+  if (!scope || (scope.microCount ?? 0) === 0) {
+    return "not_started";
+  }
+
+  return "started";
+}
+
+/**
  * Resposta pública do projecto — oculta campos Git em modo managed.
  * @param {Record<string, unknown>} row
  */
 export function toPublicProjectGit(row) {
   if (!row) return null;
   const repoMode = row.github_repo_mode || null;
+  const status = row.status || "active";
   const base = {
     slug: row.slug,
     name: row.name,
@@ -29,9 +53,10 @@ export function toPublicProjectGit(row) {
     repoMode,
     gitStatus: row.git_status,
     gitLastError: row.git_last_error,
-    status: row.status || "active",
+    status,
     completedAt: row.completed_at || null,
     createdAt: row.created_at,
+    lifecycleStatus: deriveProjectLifecycleStatus(status, row.scope_state_json),
   };
 
   if (isManagedGitRepoMode(repoMode)) {

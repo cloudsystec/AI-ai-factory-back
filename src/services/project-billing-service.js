@@ -127,6 +127,22 @@ export async function sumActualCostForProject(tenantId, projectSlug) {
 /**
  * @param {string} tenantId
  * @param {string} projectSlug
+ */
+export async function countBillingCallsForProject(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS total
+     FROM billing_ai_calls c
+     JOIN jobs j ON j.id = c.job_id
+     WHERE c.tenant_id = $1 AND j.project_slug = $2
+       AND c.source IS DISTINCT FROM 'skipped'`,
+    [tenantId, projectSlug]
+  );
+  return rows[0]?.total || 0;
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
  * @param {number} [limit]
  */
 export async function listBillingCallsForProject(tenantId, projectSlug, limit = 50) {
@@ -162,11 +178,12 @@ export async function getProjectBillingSummary(tenantId, projectSlug) {
   const project = await getProjectRow(tenantId, projectSlug);
   if (!project) return null;
 
-  const [actualCostUsd, scopeState, tasks, events] = await Promise.all([
+  const [actualCostUsd, scopeState, tasks, events, usageEventsTotal] = await Promise.all([
     sumActualCostForProject(tenantId, projectSlug),
     getScopeStateSnapshot(tenantId, projectSlug),
     getTasksSnapshot(tenantId, projectSlug),
     listBillingCallsForProject(tenantId, projectSlug, 50),
+    countBillingCallsForProject(tenantId, projectSlug),
   ]);
 
   const plannedMeta = project.planned_cost_meta || {};
@@ -191,6 +208,7 @@ export async function getProjectBillingSummary(tenantId, projectSlug) {
     plannedMeta,
     pendingUnits,
     plannedUnits,
+    usageEventsTotal,
     recentUsage: events.map((ev) => ({
       execution_id: ev.execution_id,
       job_id: ev.job_id,
