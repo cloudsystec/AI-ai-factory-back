@@ -7,7 +7,7 @@
     "start:api": "node src/index.js",
     "dev": "node --watch src/index.js",
     "dev:debug": "node --inspect=9229 --watch src/index.js",
-    "test": "node --test src/billing/billing.test.js src/lib/billing-preview-estimate.test.js src/lib/billing-cursor-match.test.js src/lib/capabilities.test.js src/lib/charge-source.test.js src/lib/cursor-charge-cents.test.js src/lib/platform-admin-emails.test.js src/lib/job-log-redis.test.js src/lib/password.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js src/lib/railway-api.test.js src/lib/stripe-webhook-helpers.test.js src/services/billing-call-service.test.js src/services/github-app-retry.test.js src/services/macro-help-service.test.js src/services/tenant-worker-env-service.test.js src/services/worker-bot-service.test.js src/services/workspace-dashboard-reader.test.js",
+    "test": "node --test src/billing/billing.test.js src/lib/billing-preview-estimate.test.js src/lib/billing-cursor-match.test.js src/lib/capabilities.test.js src/lib/charge-source.test.js src/lib/cursor-charge-cents.test.js src/lib/platform-admin-emails.test.js src/lib/job-log-redis.test.js src/lib/password.test.js src/lib/project-backup.test.js src/lib/resolve-project-scope.test.js src/lib/railway-api.test.js src/lib/stripe-webhook-helpers.test.js src/email/email-service.test.js src/email/templates/welcome.test.js src/services/billing-call-service.test.js src/services/github-app-retry.test.js src/services/macro-help-service.test.js src/services/tenant-worker-env-service.test.js src/services/worker-bot-service.test.js src/services/workspace-dashboard-reader.test.js",
     "db:migrate": "node src/db/migrate.js",
     "migrate": "node src/db/migrate.js",
     "db:seed": "node scripts/seed.js",
@@ -17,12 +17,14 @@
     "set-cursor-admin-key": "node scripts/set-cursor-admin-key.js",
     "backfill-scope-md": "node scripts/backfill-scope-md.js",
     "verify:github-app": "node scripts/verify-github-app.mjs",
+    "email:test": "node scripts/send-test-email.mjs",
     "railway:github-key": "node scripts/railway-github-key.mjs",
     "reset": "node scripts/reset-env.js",
     "reset:drop": "node scripts/reset-env.js --drop",
     "reset:keep-tenant": "node scripts/reset-env.js --keep-tenant"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1065.0",
     "@cursor/sdk": "^1.0.17",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
