@@ -125,6 +125,27 @@ export async function allMicroTaskPrsMerged(tenantId, projectSlug, microId) {
 }
 
 /**
+ * PRs mergeadas de todas as tasks do micro exceto a closer.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ * @param {string} closerTaskId
+ */
+export async function allNonCloserPrsMerged(tenantId, projectSlug, microId, closerTaskId) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE tl_review_status = 'merged')::int AS merged
+     FROM task_pull_requests
+     WHERE tenant_id = $1 AND project_slug = $2 AND micro_id = $3
+       AND task_id != $4`,
+    [tenantId, projectSlug, microId, closerTaskId]
+  );
+  const r = rows[0];
+  if (!r || r.total === 0) return true;
+  return r.total === r.merged;
+}
+
+/**
  * Enfileira tech-lead-review após PR da task.
  * @param {string} [requestedByUserId] executor (chave de billing / contexto)
  */

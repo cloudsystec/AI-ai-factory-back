@@ -19,6 +19,7 @@ import {
 } from "./routes/github.js";
 import { executionRouter } from "./routes/execution.js";
 import { macroHelpRouter } from "./routes/macro-help.js";
+import { projectDiscoveryRouter } from "./routes/project-discovery.js";
 import { projectCopilotRouter } from "./routes/project-copilot.js";
 import { createLogger, logHttpRequest } from "./lib/logger.js";
 import { initWsHub } from "./lib/ws-hub.js";
@@ -137,6 +138,7 @@ app.use("/api/execution", executionRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/billing", billingRouter);
 app.use("/api/macro-help", macroHelpRouter);
+app.use("/api/project-discovery", projectDiscoveryRouter);
 app.use("/api", projectDashboardRouter);
 app.use("/worker", workerRouter);
 app.use("/admin", adminRouter);

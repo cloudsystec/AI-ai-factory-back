@@ -139,12 +139,12 @@ export async function getTasksForDashboard(tenantId, projectSlug, opts = {}) {
  * @param {string} projectSlug
  * @param {object|null} state
  */
-function enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, state) {
+async function enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, state) {
   if (!state || typeof state !== "object" || !state.openMicro?.id) {
     return state;
   }
   try {
-    const detail = getOpenMicroTasksDetail(
+    const detail = await getOpenMicroTasksDetail(
       tenantId,
       projectSlug,
       state.openMicro.id
@@ -208,7 +208,7 @@ export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}
     const meta = await buildDashboardMeta(tenantId, projectSlug, false);
     return state
       ? enrichScopeWithProjectStatus(
-          enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+          await enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
             ...state,
             dashboardMeta: meta,
           }),
@@ -230,7 +230,7 @@ export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}
       );
     }
     return enrichScopeWithProjectStatus(
-      enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+      await enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
         ...live.scopeState,
         dashboardMeta: meta,
       }),
@@ -242,7 +242,7 @@ export async function getScopeStateForDashboard(tenantId, projectSlug, opts = {}
   const meta = await buildDashboardMeta(tenantId, projectSlug, false);
   return state
     ? enrichScopeWithProjectStatus(
-        enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
+        await enrichScopeStateWithOpenMicroTasks(tenantId, projectSlug, {
           ...state,
           dashboardMeta: meta,
         }),

@@ -4,7 +4,7 @@ import {
   checkMicroReadyForIntegrationQa,
   getBlockedRetryableTasks,
   buildAutoRetryPayload,
-  getEligibleTodoTasks,
+  getDispatchEligibleTodoTasks,
   getMicroWaveState,
   getNextMicroForTaskAnalysis,
   microHasUndeliveredTasks,
@@ -689,7 +689,7 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       return { enqueued, hint: null };
     }
 
-    const { eligible, stateByTaskId, microTasks } = getEligibleTodoTasks(
+    const { eligible, stateByTaskId, microTasks } = await getDispatchEligibleTodoTasks(
       tenantId,
       projectSlug,
       openId
@@ -761,7 +761,7 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       return autoRetry;
     }
 
-    /** Micro concluído: todas as tasks done → QA de integração na tech-lead. */
+    /** Micro concluído: todas as tasks done → release do micro (QA já ocorreu na task de fechamento). */
     const allDone =
       microTasks.length > 0 &&
       microTasks.every((t) => {
@@ -773,11 +773,11 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       allDone &&
       (await checkMicroReadyForIntegrationQa(tenantId, projectSlug, openId))
     ) {
-      if (!(await hasActiveMicroJob(tenantId, projectSlug, "micro-integration-qa", openId))) {
+      if (!(await hasActiveMicroJob(tenantId, projectSlug, "micro-release", openId))) {
         const id = randomUUID();
         await query(
           `INSERT INTO jobs (id, tenant_id, project_slug, kind, macro_id, status, payload, requested_by_user_id)
-           VALUES ($1, $2, $3, 'micro-integration-qa', $4, 'queued', $5::jsonb, $6)`,
+           VALUES ($1, $2, $3, 'micro-release', $4, 'queued', $5::jsonb, $6)`,
           [
             id,
             tenantId,
@@ -787,8 +787,8 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
             executorUserId,
           ]
         );
-        enqueued.push({ jobId: id, kind: "micro-integration-qa", microId: openId });
-        log.info("QA de integração do micro", {
+        enqueued.push({ jobId: id, kind: "micro-release", microId: openId });
+        log.info("Release do micro (pós-QA na task de fechamento)", {
           project: projectSlug,
           microId: openId,
           jobId: id,
@@ -797,7 +797,7 @@ async function dispatchQueuedWorkInternal(tenantId, projectSlug) {
       }
       return {
         enqueued: [],
-        hint: `Micro ${openId}: QA de integração em curso.`,
+        hint: `Micro ${openId}: release em curso.`,
       };
     }
 

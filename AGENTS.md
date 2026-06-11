@@ -45,16 +45,29 @@ O Dev Agent deve:
 Não há passo separado de build no orquestrador: a compilação é critério de saída do Dev (abordagem soft). Erros de compilação não devem ser deixados para o QA.
 
 O QA Agent deve:
-- ler `evidence/tests/TASK-ID-test-output.txt` quando existir (o orquestrador gera a evidência antes do QA)
-- gravar `reports/tasks/TASK-ID-qa.md` com exit code, falhas e observações
-- gravar **`reports/tasks/TASK-ID-qa-verdict.json`** com JSON `{ "verdict": "pass"|"fail", "summary": "..." }` — o orquestrador **só** chama o Reviewer se `verdict` for `pass`; se for `fail`, o Dev corrige e o ciclo **testes → QA** repete (limite: variável de ambiente `MAX_QA_FAILURE_RETRIES`, predefinição 5 rejeições após a primeira QA)
+- ler `evidence/tests/TASK-ID-test-output.txt` quando existir (gerado na task de fechamento)
+- na **task de fechamento**, gravar veredito em `reports/scopes/<MICRO-ID>-qa-verdict.json` e relatório em `reports/scopes/<MICRO-ID>-qa.md`
+- em fluxo legado por task: `reports/tasks/TASK-ID-qa-verdict.json`
+- se `verdict` for `fail`, o Dev corrige e o ciclo **testes → QA** repete (limite: `MAX_QA_FAILURE_RETRIES`)
 
 Nunca declarar testes como aprovados sem evidência.
 Se o terminal for recusado, registar isso claramente.
 
 ## Testes
 
-Os testes são executados pelo orquestrador local, não pelo agente.
+**Tasks intermediárias:** sem `npm test` nem QA Agent no orquestrador.
 
-O arquivo bruto de evidência pode ser apagado após o QA e Reviewer.
+**Task de fechamento:** testes integrados + QA do micro (critérios em `micro.acceptance` / `micro.testStrategy`).
+
+O arquivo bruto de evidência pode ser apagado após o QA.
 O relatório QA deve preservar o resultado relevante.
+
+## Criação de projeto (descoberta PO/SM)
+
+Agente: `agents/project-discovery.md` — conduz brainstorm **antes** de `POST /api/projects`.
+
+- Sessão em `project_discovery_sessions`; resposta JSON com `decisions`, `readyToCreate`, `proposedName`, `proposedSlug`, `scopeMd`.
+- **Nunca assumir** decisões — operador confirma cada item da checklist.
+- Criação exige `discoverySessionId` com `status: ready`; escopo vem da sessão, não do body livre.
+
+Agente `agents/macro-scope-help.md` (MacroHelp) permanece só para **refinar** escopo macro de projetos já existentes.

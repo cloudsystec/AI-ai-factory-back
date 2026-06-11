@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { query } from "../db/pool.js";
 import { tenantWorkspacesDir } from "../lib/tenant-paths.js";
-import { allMicroTaskPrsMerged } from "./task-pr-service.js";
+import { allMicroTaskPrsMerged, allNonCloserPrsMerged } from "./task-pr-service.js";
+import {
+  filterEligibleForMicroCloser,
+  getMicroCloserTask,
+  isMicroCloserTask,
+} from "../lib/micro-task-utils.js";
 import { readTasksState } from "./task-state-service.js";
 
 /**
@@ -202,6 +207,28 @@ export function getEligibleTodoTasks(tenantId, projectSlug, microId) {
   return { eligible, backlog, stateByTaskId, microTasks };
 }
 
+/**
+ * Tasks elegíveis para dispatch, com regras da task de fechamento (serial).
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ * @param {string} microId
+ */
+export async function getDispatchEligibleTodoTasks(tenantId, projectSlug, microId) {
+  const base = getEligibleTodoTasks(tenantId, projectSlug, microId);
+  const closer = getMicroCloserTask(base.microTasks);
+  const filtered = await filterEligibleForMicroCloser(
+    base.eligible,
+    base.microTasks,
+    base.stateByTaskId,
+    isTaskDone,
+    () =>
+      closer
+        ? allNonCloserPrsMerged(tenantId, projectSlug, microId, closer.id)
+        : allMicroTaskPrsMerged(tenantId, projectSlug, microId)
+  );
+  return { ...base, eligible: filtered };
+}
+
 function taskAutoRetryMax() {
   const raw = Number(process.env.TASK_AUTO_RETRY_MAX);
   return Number.isFinite(raw) && raw >= 0 ? raw : 3;
@@ -269,8 +296,8 @@ export function buildAutoRetryPayload(runtime) {
  * @param {string} projectSlug
  * @param {string} microId
  */
-export function getOpenMicroTasksDetail(tenantId, projectSlug, microId) {
-  const { eligible, microTasks, stateByTaskId, backlog } = getEligibleTodoTasks(
+export async function getOpenMicroTasksDetail(tenantId, projectSlug, microId) {
+  const { eligible, microTasks, stateByTaskId, backlog } = await getDispatchEligibleTodoTasks(
     tenantId,
     projectSlug,
     microId
@@ -343,20 +370,34 @@ export function getOpenMicroTasksDetail(tenantId, projectSlug, microId) {
         statusInSync: !syncWarning,
         syncWarning,
         dependencies: dependencyRows(t),
+        isMicroCloser: isMicroCloserTask(t),
         ...meta,
       };
     });
 
+  const closer = getMicroCloserTask(microTasks);
+  let parallelHint;
+  if (eligible.length === 0) {
+    parallelHint =
+      "Nenhuma task elegível agora — bots em Play não recebem jobs task até haver todo aprovado com dependências satisfeitas.";
+  } else if (closer && eligible.length === 1 && eligible[0].id === closer.id) {
+    parallelHint =
+      "Task de fechamento (QA do micro) elegível — execução serial após merge das PRs das tasks irmãs.";
+  } else if (eligible.some((t) => isMicroCloserTask(t))) {
+    parallelHint = "Aguardando merge das PRs das tasks irmãs para liberar a task de fechamento.";
+  } else if (eligible.length === 1) {
+    parallelHint =
+      "1 task elegível — no máximo 1 bot task em paralelo neste micro (cadeia de dependências).";
+  } else {
+    parallelHint = `${eligible.length} tasks elegíveis — até ${eligible.length} bots podem correr tasks deste micro em paralelo (exceto a task de fechamento).`;
+  }
+
   return {
     microId,
+    closerTaskId: closer?.id ?? null,
     eligibleCount: eligible.length,
     totalCount: tasks.length,
-    parallelHint:
-      eligible.length === 0
-        ? "Nenhuma task elegível agora — bots em Play não recebem jobs task até haver todo aprovado com dependências satisfeitas."
-        : eligible.length === 1
-          ? "1 task elegível — no máximo 1 bot task em paralelo neste micro (cadeia de dependências)."
-          : `${eligible.length} tasks elegíveis — até ${eligible.length} bots podem correr tasks deste micro em paralelo.`,
+    parallelHint,
     tasks,
   };
 }

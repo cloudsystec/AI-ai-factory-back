@@ -52,6 +52,10 @@ import {
 
 import { approveTaskHumanValidation } from "../services/task-state-service.js";
 import { assertProjectCreationReady } from "../services/macro-help-service.js";
+import {
+  assertSessionReady,
+  consumeDiscoverySession,
+} from "../services/project-discovery-service.js";
 import { toPublicProjectGit, isManagedGitRepoMode } from "../lib/project-git-public.js";
 import { exportProjectCodeZip } from "../services/project-export-service.js";
 import { startGitMigration } from "../services/git-migrate-service.js";
@@ -92,32 +96,42 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
     });
   }
 
-  const { name, slug, scope, git } = req.body ?? {};
+  const { name, slug, scope, git, discoverySessionId } = req.body ?? {};
 
-  const trimmedName = String(name ?? "").trim();
+  const sessionId = String(discoverySessionId ?? "").trim();
 
-  const trimmedSlug = String(slug ?? "").trim();
+  let trimmedName = String(name ?? "").trim();
+  let trimmedSlug = String(slug ?? "").trim();
+  let trimmedScope = String(scope ?? "").trim();
 
-  const trimmedScope = String(scope ?? "").trim();
-
-
+  if (sessionId) {
+    try {
+      const fromSession = await assertSessionReady(req.user.tenantId, sessionId);
+      trimmedName = fromSession.name;
+      trimmedSlug = fromSession.slug;
+      trimmedScope = fromSession.scope;
+    } catch (err) {
+      return res.status(err.status || 400).json({
+        error: err.message,
+        code: err.code ?? undefined,
+      });
+    }
+  } else if (!git || !git.mode) {
+    return res.status(400).json({
+      error:
+        "Criação de projeto exige sessão de descoberta (chat PO/SM). Conclua o brainstorm e use discoverySessionId.",
+      code: "discovery_required",
+    });
+  }
 
   if (!trimmedName) {
-
     return res.status(400).json({ error: "Nome do projeto é obrigatório." });
-
   }
-
   if (!trimmedScope) {
-
     return res.status(400).json({ error: "Escopo é obrigatório." });
-
   }
-
   if (!trimmedSlug) {
-
     return res.status(400).json({ error: "Slug é obrigatório." });
-
   }
 
   if (!isValidProjectSlug(trimmedSlug)) {
@@ -148,6 +162,9 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
         [req.user.tenantId, trimmedSlug, trimmedName, trimmedScope]
       );
       await cloneAgentTemplatesToProject(req.user.tenantId, trimmedSlug);
+      if (sessionId) {
+        await consumeDiscoverySession(req.user.tenantId, sessionId);
+      }
       return res.status(201).json({
         project: trimmedSlug,
         macroId: trimmedSlug,
@@ -287,18 +304,16 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
 
     });
 
+    if (sessionId) {
+      await consumeDiscoverySession(req.user.tenantId, sessionId);
+    }
+
     res.status(201).json({
-
       project: trimmedSlug,
-
       macroId: trimmedSlug,
-
       name: trimmedName,
-
       jobId: queued.jobId,
-
       gitStatus: "pending",
-
     });
 
   } catch (error) {
