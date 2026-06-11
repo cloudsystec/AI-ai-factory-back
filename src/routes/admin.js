@@ -13,17 +13,27 @@ import {
 import {
   createTenantUser,
   deleteTenantUser,
+  getUserInTenant,
   listTenantUsers,
   setExecutorCursorApiKey,
-  setUserPassword,
   setTenantUsersMax,
   updateTenantUserRole,
   ROLES,
 } from "../services/user-service.js";
 import {
+  resetTemporaryPasswordForUser,
+  unlockUser,
+} from "../services/password-security-service.js";
+import {
   setTenantCursorAdminKey,
   upsertTenant,
 } from "../services/tenant-service.js";
+import { afterTenantCreated } from "../services/tenant-onboarding-service.js";
+import {
+  blockTenant,
+  isTenantBlocked,
+  unblockTenant,
+} from "../services/tenant-block-service.js";
 import {
   countBotsReady,
   ensureWorkerBotRows,
@@ -69,6 +79,7 @@ adminRouter.get("/tenants", async (_req, res) => {
   const { rows } = await query(
     `SELECT t.id, t.email, t.name, t.plan_id, t.plan_active_until,
             t.users_max, t.agent_slots_max, t.worker_status,
+            t.blocked_at, t.block_reason, t.block_note, t.blocked_by,
             d.status AS worker_deploy_status,
             d.railway_service_id,
             d.last_error AS worker_deploy_error,
@@ -82,6 +93,7 @@ adminRouter.get("/tenants", async (_req, res) => {
       const botsConfiguredCount = await countBotsReady(t.id);
       return {
         ...t,
+        isBlocked: isTenantBlocked(t),
         botsTotal: t.agent_slots_max,
         botsConfiguredCount,
         workerDeployStatus: t.worker_deploy_status || null,
@@ -95,6 +107,36 @@ adminRouter.get("/tenants", async (_req, res) => {
     })
   );
   res.json({ tenants });
+});
+
+adminRouter.post("/tenants/:tenantId/block", async (req, res) => {
+  try {
+    const result = await blockTenant(req.params.tenantId, {
+      reason: req.body?.reason,
+      note: req.body?.note,
+      blockedBy: req.user.email,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      code: e.code,
+    });
+  }
+});
+
+adminRouter.post("/tenants/:tenantId/unblock", async (req, res) => {
+  try {
+    const result = await unblockTenant(req.params.tenantId, {
+      unblockedBy: req.user.email,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({
+      error: e.message,
+      code: e.code,
+    });
+  }
 });
 
 adminRouter.post("/tenants/:tenantId/worker/provision", async (req, res) => {
@@ -141,30 +183,28 @@ adminRouter.post("/tenants/:tenantId/worker/deploy", async (req, res) => {
 
 adminRouter.post("/tenants", async (req, res) => {
   try {
-    const { email, name, planId, planDays, auditorEmail, auditorPassword } =
-      req.body || {};
+    const { email, name, planId, planDays, auditorEmail } = req.body || {};
 
     if (!email || !name) {
       return res
         .status(400)
         .json({ error: "email e name da empresa são obrigatórios" });
     }
-    if (!auditorEmail || !auditorPassword) {
-      return res
-        .status(400)
-        .json({ error: "auditorEmail e auditorPassword são obrigatórios" });
+    if (!auditorEmail) {
+      return res.status(400).json({ error: "auditorEmail é obrigatório" });
     }
 
     const tenant = await upsertTenant({ email, name, planId, planDays });
-    await ensureWorkerBotRows(tenant.id);
 
     const auditor = await createTenantUser(
       tenant.id,
-      { email: auditorEmail, role: "auditor", password: auditorPassword },
-      { allowedRoles: ROLES }
+      { email: auditorEmail, role: "auditor" },
+      { allowedRoles: ROLES, tenantName: name }
     );
 
-    res.status(201).json({ tenant, auditor });
+    const workerSetup = await afterTenantCreated(tenant.id);
+
+    res.status(201).json({ tenant, auditor, workerSetup });
   } catch (e) {
     res
       .status(e.status || 500)
@@ -295,7 +335,6 @@ adminRouter.post("/tenants/:tenantId/users", async (req, res) => {
       {
         email: req.body?.email,
         role: req.body?.role,
-        password: req.body?.password,
       },
       { allowedRoles: ROLES }
     );
@@ -332,19 +371,34 @@ adminRouter.delete("/tenants/:tenantId/users/:userId", async (req, res) => {
   }
 });
 
-adminRouter.put("/tenants/:tenantId/users/:userId/password", async (req, res) => {
+adminRouter.post("/tenants/:tenantId/users/:userId/unlock", async (req, res) => {
   try {
-    res.json(
-      await setUserPassword(
-        req.params.tenantId,
-        req.params.userId,
-        req.body?.password
-      )
-    );
+    const target = await getUserInTenant(req.params.userId, req.params.tenantId);
+    if (!target) return res.status(404).json({ error: "Usuário não encontrado" });
+    res.json(await unlockUser(req.params.tenantId, req.params.userId));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
 });
+
+adminRouter.post(
+  "/tenants/:tenantId/users/:userId/reset-temporary-password",
+  async (req, res) => {
+    try {
+      const target = await getUserInTenant(req.params.userId, req.params.tenantId);
+      if (!target) return res.status(404).json({ error: "Usuário não encontrado" });
+      res.json(
+        await resetTemporaryPasswordForUser(
+          req.params.tenantId,
+          target.id,
+          target.email
+        )
+      );
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  }
+);
 
 adminRouter.put("/tenants/:tenantId/users/:userId/cursor-api-key", async (req, res) => {
   try {

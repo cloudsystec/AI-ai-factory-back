@@ -308,7 +308,7 @@ export async function startAllReadyWorkers(tenantId, projectSlug, opts = {}) {
     .map((w) => w.slot);
   if (readySlots.length === 0) {
     throw Object.assign(
-      new Error("Nenhum bot configurado. Contacte o administrador da plataforma."),
+      new Error("Nenhum bot configurado. Contate o administrador da plataforma."),
       { status: 403, code: "bot_not_configured" }
     );
   }
@@ -378,7 +378,7 @@ export async function stopWorkerSlot(tenantId, projectSlug, workerSlot) {
 export async function addWorkersToExecution(tenantId, projectSlug, newSlots, executorUserId = null) {
   const exec = await getExecutionState(tenantId, projectSlug);
   if (!exec.continuous_active) {
-    throw new Error("Execução não está activa. Use start primeiro.");
+    throw new Error("Execução não está ativa. Use start primeiro.");
   }
 
   const current = Array.isArray(exec.selected_worker_slots)

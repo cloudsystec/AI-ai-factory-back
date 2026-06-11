@@ -12,6 +12,11 @@ export function tenantDataBase() {
   return path.resolve(__dirname, "../../../ai-factory-cli/data/tenants");
 }
 
+/** Raiz do repo ai-factory-cli (contém `scripts/` e `data/tenants/`). */
+export function tenantCliRoot() {
+  return path.join(tenantDataBase(), "..", "..");
+}
+
 /**
  * @param {string} tenantId
  */

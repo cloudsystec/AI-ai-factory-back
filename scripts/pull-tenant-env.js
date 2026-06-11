@@ -1,12 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import "dotenv/config";
 import { getPool } from "../src/db/pool.js";
-import { ensureTenantDirs, tenantDataRoot } from "../src/lib/tenant-paths.js";
-import {
-  buildTenantWorkerEnv,
-  formatTenantWorkerEnvLines,
-} from "../src/services/tenant-worker-env-service.js";
+import { writeTenantWorkerEnvFile } from "../src/services/tenant-onboarding-service.js";
 
 const tenantId = process.argv[2];
 if (!tenantId) {
@@ -15,11 +9,7 @@ if (!tenantId) {
 }
 
 async function main() {
-  const env = await buildTenantWorkerEnv(tenantId);
-  ensureTenantDirs(tenantId);
-  const dir = tenantDataRoot(tenantId);
-  const envPath = path.join(dir, ".env");
-  fs.writeFileSync(envPath, formatTenantWorkerEnvLines(env).join("\n") + "\n", "utf-8");
+  const { envPath } = await writeTenantWorkerEnvFile(tenantId);
   console.log("Escrito:", envPath);
   console.log(
     "Nota: CURSOR_API_KEY e email do bot vêm no claim de cada job por slot (não no .env)."

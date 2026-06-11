@@ -12,7 +12,7 @@ test("escapeHtml previne XSS", () => {
 
 test("deriveRecipientName a partir do email", () => {
   assert.equal(deriveRecipientName("daniel.espindola@test.com"), "Daniel Espindola");
-  assert.equal(deriveRecipientName(""), "Utilizador");
+  assert.equal(deriveRecipientName(""), "Usuário");
 });
 
 test("renderWelcomeEmail usa /login com email por defeito", () => {
@@ -41,13 +41,25 @@ test("renderWelcomeEmail inclui tagline, login e nome escapado", () => {
     loginUrl: "https://app.example.com/login",
   });
 
-  assert.match(rendered.subject, /dev for less/);
+  assert.match(rendered.subject, /^\[DEV4LESS\] - /);
   assert.match(rendered.html, /IA QUE ENTREGA\. DO BACKLOG AO DEPLOY\./);
   assert.match(rendered.html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(rendered.html, /<script>alert/);
   assert.match(rendered.html, /https:\/\/app\.example\.com\/login/);
   assert.match(rendered.text, /https:\/\/app\.example\.com\/login/);
   assert.match(rendered.text, /user@test\.com/);
+});
+
+test("renderWelcomeEmail inclui senha temporária quando fornecida", () => {
+  const rendered = renderWelcomeEmail({
+    recipientEmail: "user@test.com",
+    recipientName: "Ana",
+    temporaryPassword: "WelcomeTemp77",
+  });
+  assert.match(rendered.subject, /\[DEV4LESS\] - Bem-vindo/);
+  assert.match(rendered.html, /WelcomeTemp77/);
+  assert.match(rendered.text, /WelcomeTemp77/);
+  assert.match(rendered.html, /obrigatório definir uma nova senha/i);
 });
 
 test("renderWelcomeEmail omite badge de plano quando planId ausente", () => {

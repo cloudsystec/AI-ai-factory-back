@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { emptyScopeState } from "../lib/empty-scope-state.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
-import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { query } from "../db/pool.js";
+import { requireActivePlan, requireAuth, attachCapabilities, requirePasswordReady } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
   buildDashboardMeta,
@@ -13,7 +14,7 @@ import {
 } from "../services/project-dashboard-service.js";
 
 export const projectDashboardRouter = Router();
-projectDashboardRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+projectDashboardRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 function parseProject(req, res) {
   const project = req.query.project ?? req.body?.project;
@@ -24,9 +25,20 @@ function parseProject(req, res) {
   return project;
 }
 
+async function projectExistsForTenant(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT 1 FROM projects WHERE tenant_id = $1 AND slug = $2 LIMIT 1`,
+    [tenantId, projectSlug]
+  );
+  return rows.length > 0;
+}
+
 projectDashboardRouter.get("/scope-state", async (req, res) => {
   const project = parseProject(req, res);
   if (!project) return;
+  if (!(await projectExistsForTenant(req.user.tenantId, project))) {
+    return res.status(404).json({ error: "Projeto não encontrado" });
+  }
   const source =
     req.query.source === "db" ? "db" : undefined;
   const state = await getScopeStateForDashboard(req.user.tenantId, project, {

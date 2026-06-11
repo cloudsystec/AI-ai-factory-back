@@ -54,7 +54,7 @@ export async function assertMacroHelpReady(tenantId) {
   if (!status.adminKeyConfigured) {
     throw Object.assign(
       new Error(
-        "Chave Admin Cursor não configurada para o tenant. Contacte o administrador da plataforma."
+        "Chave Admin Cursor não configurada para o tenant. Contate o administrador da plataforma."
       ),
       { status: 403, code: "admin_key_not_configured" }
     );
@@ -62,7 +62,7 @@ export async function assertMacroHelpReady(tenantId) {
   if (!status.botReady) {
     throw Object.assign(
       new Error(
-        "Nenhum bot configurado. Contacte o administrador da plataforma."
+        "Nenhum bot configurado. Contate o administrador da plataforma."
       ),
       { status: 403, code: "bot_not_configured" }
     );
@@ -127,7 +127,7 @@ export function parseMacroHelpResponse(raw) {
 function buildMacroHelpPrompt(input) {
   const agentRules = readAgentPrompt();
   const history = (input.messages || [])
-    .map((m) => `${m.role === "assistant" ? "Assistente" : "Utilizador"}: ${m.content}`)
+    .map((m) => `${m.role === "assistant" ? "Assistente" : "Usuário"}: ${m.content}`)
     .join("\n\n");
 
   const contextLines = [];
@@ -228,7 +228,7 @@ export async function runMacroHelpChat(tenantId, userId, body) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser?.content?.trim()) {
-    throw Object.assign(new Error("Mensagem do utilizador é obrigatória."), {
+    throw Object.assign(new Error("Mensagem do usuário é obrigatória."), {
       status: 400,
     });
   }

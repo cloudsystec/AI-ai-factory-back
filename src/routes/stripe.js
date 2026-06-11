@@ -6,21 +6,23 @@
  * Payment Links (subscription): metadata `plan_id` = starter | team | scale | business
  * Nome da empresa: collected_information.business_name no Checkout Session
  */
-import crypto from "node:crypto";
-import { Router } from "express";
 import Stripe from "stripe";
 import { query } from "../db/pool.js";
 import { hashPassword } from "../lib/password.js";
 import { createLogger } from "../lib/logger.js";
+import { sendWelcomeEmail } from "../email/email-service.js";
+import { applyTemporaryPassword } from "../services/password-security-service.js";
 import {
   companyNameFromCheckoutSession,
   companyNameFromInvoice,
 } from "../lib/stripe-webhook-helpers.js";
 import {
-  setTenantCursorAdminKey,
   upsertTenant,
 } from "../services/tenant-service.js";
-import { enqueueWorkerProvision } from "../services/worker-deployment-service.js";
+import {
+  afterTenantCreated,
+  applyPlatformCursorAdminKeyIfNeeded,
+} from "../services/tenant-onboarding-service.js";
 
 const log = createLogger("stripe");
 
@@ -96,52 +98,58 @@ function emailFromInvoice(invoice) {
 
 /**
  * @param {string} tenantId
- */
-async function applyPlatformCursorAdminKeyIfNeeded(tenantId) {
-  const platformKey = String(process.env.PLATFORM_CURSOR_ADMIN_API_KEY || "").trim();
-  if (!platformKey) return;
-  const { rows } = await query(
-    "SELECT cursor_admin_api_key_encrypted FROM tenants WHERE id = $1",
-    [tenantId]
-  );
-  if (rows[0]?.cursor_admin_api_key_encrypted) return;
-  await setTenantCursorAdminKey(tenantId, platformKey);
-}
-
-function resolveTempPassword() {
-  const fromEnv = process.env.STRIPE_DEFAULT_USER_PASSWORD;
-  if (fromEnv) return String(fromEnv);
-  const generated = crypto.randomBytes(12).toString("base64url");
-  if (process.env.NODE_ENV !== "production") {
-    log.info("Senha temporária gerada para auditor (dev)", { password: generated });
-  }
-  return generated;
-}
-
-/**
- * @param {string} tenantId
  * @param {string} email
+ * @param {{ updatePasswordIfMissing?: boolean, companyName?: string, planId?: string }} [opts]
  */
-async function ensureAuditorUser(tenantId, email, { updatePasswordIfMissing = true } = {}) {
-  const tempPassword = resolveTempPassword();
-  const passwordHash = hashPassword(tempPassword);
-  if (updatePasswordIfMissing) {
-    await query(
-      `INSERT INTO users (tenant_id, email, role, password_hash)
-       VALUES ($1, $2, 'auditor', $3)
-       ON CONFLICT (tenant_id, email) DO UPDATE SET
-         role = EXCLUDED.role,
-         password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash)`,
-      [tenantId, email, passwordHash]
-    );
-  } else {
-    await query(
-      `INSERT INTO users (tenant_id, email, role, password_hash)
-       VALUES ($1, $2, 'auditor', $3)
-       ON CONFLICT (tenant_id, email) DO NOTHING`,
-      [tenantId, email, passwordHash]
-    );
+async function ensureAuditorUser(tenantId, email, opts = {}) {
+  const { companyName, planId } = opts;
+  const normalized = String(email).trim().toLowerCase();
+
+  const { rows: existing } = await query(
+    `SELECT id, password_hash FROM users WHERE tenant_id = $1 AND email = $2`,
+    [tenantId, normalized]
+  );
+
+  if (existing[0]?.password_hash) {
+    await query(`UPDATE users SET role = 'auditor' WHERE id = $1`, [existing[0].id]);
+    return existing[0].id;
   }
+
+  let userId = existing[0]?.id;
+  if (!userId) {
+    const placeholderHash = hashPassword(`bootstrap-${Date.now()}`);
+    const { rows } = await query(
+      `INSERT INTO users (tenant_id, email, role, password_hash, password_must_change)
+       VALUES ($1, $2, 'auditor', $3, true)
+       RETURNING id`,
+      [tenantId, normalized, placeholderHash]
+    );
+    userId = rows[0].id;
+  } else {
+    await query(`UPDATE users SET role = 'auditor' WHERE id = $1`, [userId]);
+  }
+
+  const temporaryPassword = await applyTemporaryPassword(userId, {
+    mustChange: true,
+    clearFailedAttempts: true,
+  });
+
+  try {
+    await sendWelcomeEmail({
+      recipientEmail: normalized,
+      temporaryPassword,
+      companyName,
+      planId,
+    });
+  } catch (e) {
+    log.error("Falha ao enviar welcome email", {
+      tenantId,
+      email: normalized,
+      error: e.message,
+    });
+  }
+
+  return userId;
 }
 
 /**
@@ -161,9 +169,11 @@ async function provisionFromCheckoutSession(session) {
     name: companyName,
     planId,
   });
-  await ensureAuditorUser(tenant.id, tenant.email);
-  await applyPlatformCursorAdminKeyIfNeeded(tenant.id);
-  enqueueWorkerProvision(tenant.id);
+  await ensureAuditorUser(tenant.id, tenant.email, {
+    companyName: companyName || undefined,
+    planId,
+  });
+  await afterTenantCreated(tenant.id);
   log.info("Tenant provisionado via Stripe", {
     tenantId: tenant.id,
     email: tenant.email,
@@ -230,7 +240,7 @@ async function provisionFromInvoicePaid(invoice) {
     name: companyName,
     planId,
   });
-  await ensureAuditorUser(tenant.id, tenant.email, { updatePasswordIfMissing: false });
+  await ensureAuditorUser(tenant.id, tenant.email);
   await applyPlatformCursorAdminKeyIfNeeded(tenant.id);
   log.info("Tenant atualizado via invoice.paid", {
     tenantId: tenant.id,
@@ -322,5 +332,3 @@ export async function handleStripeWebhook(req, res) {
     res.status(500).json({ error: "webhook failed" });
   }
 }
-
-export const stripeRouter = Router();

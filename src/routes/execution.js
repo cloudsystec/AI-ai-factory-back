@@ -4,6 +4,7 @@ import {
   requireActivePlan,
   requireAuth,
   attachCapabilities,
+  requirePasswordReady,
 } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
@@ -21,7 +22,7 @@ import { broadcast, broadcastWorkersAndJobs } from "../lib/ws-hub.js";
 import { getProjectGitRow } from "../services/project-git-service.js";
 
 export const executionRouter = Router();
-executionRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+executionRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 executionRouter.get("/:projectSlug/state", async (req, res) => {
   const projectSlug = String(req.params.projectSlug ?? "").trim();

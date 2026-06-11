@@ -4,7 +4,7 @@ import {
   billingCallDisplayAt,
   mapCallStatusForUi,
 } from "../lib/billing-display.js";
-import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities, requirePasswordReady } from "../middleware/auth.js";
 import {
   countBillingCallsForTenant,
   listRecentBillingCalls,
@@ -16,7 +16,7 @@ import { getTenantUserQuota } from "../services/user-service.js";
 import { listWorkersStatus } from "../services/worker-bot-service.js";
 
 export const billingRouter = Router();
-billingRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+billingRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 billingRouter.get("/summary", async (req, res) => {
   const t = req.tenant;

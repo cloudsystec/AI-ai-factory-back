@@ -80,7 +80,7 @@ export function parseAgentConfigHelpResponse(raw) {
 function buildAgentConfigHelpPrompt(input) {
   const agentRules = readAgentPrompt();
   const history = (input.messages || [])
-    .map((m) => `${m.role === "assistant" ? "Assistente" : "Utilizador"}: ${m.content}`)
+    .map((m) => `${m.role === "assistant" ? "Assistente" : "Usuário"}: ${m.content}`)
     .join("\n\n");
 
   const contextLines = [];

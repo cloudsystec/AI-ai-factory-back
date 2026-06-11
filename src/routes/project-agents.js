@@ -3,7 +3,7 @@ import { allRoleKeys, GLOBAL_AGENT_ROLE_KEY } from "../lib/agent-roles.js";
 import { isValidProjectSlug } from "../lib/project-slug.js";
 import { isPlatformAdminEmail } from "../lib/platform-admin-emails.js";
 import { query } from "../db/pool.js";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, requirePasswordReady } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
   listProjectAgentOverrides,
@@ -18,6 +18,7 @@ import {
 export const projectAgentsRouter = Router({ mergeParams: true });
 projectAgentsRouter.use(
   requireAuth,
+  requirePasswordReady,
   requireActivePlan,
   requireCapability("execute")
 );

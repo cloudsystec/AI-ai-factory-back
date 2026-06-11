@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities, requirePasswordReady } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
   getMacroHelpStatus,
@@ -8,7 +8,7 @@ import {
 
 export const macroHelpRouter = Router();
 
-macroHelpRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+macroHelpRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 macroHelpRouter.get("/status", requireCapability("write"), async (req, res) => {
   const status = await getMacroHelpStatus(req.user.tenantId);

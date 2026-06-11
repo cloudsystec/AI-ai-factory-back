@@ -7,6 +7,11 @@ import {
   sqlExcludePlatformAdminEmails,
 } from "../lib/platform-admin-emails.js";
 import { limitsForPlan } from "./tenant-service.js";
+import { applyTemporaryPassword, MIN_PASSWORD_LENGTH } from "./password-security-service.js";
+import { sendUserInvitedEmail } from "../email/email-service.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("user-service");
 
 const ROLES = new Set(["executor", "auditor", "viewer"]);
 
@@ -56,7 +61,8 @@ export async function assertCanAddUser(tenantId) {
  */
 export async function getUserInTenant(userId, tenantId) {
   const { rows } = await query(
-    `SELECT id, tenant_id, email, role, password_hash, cursor_api_key_encrypted, created_at
+    `SELECT id, tenant_id, email, role, password_hash, cursor_api_key_encrypted, created_at,
+            password_must_change, failed_login_attempts, locked_at
      FROM users WHERE id = $1 AND tenant_id = $2`,
     [userId, tenantId]
   );
@@ -74,6 +80,8 @@ export function userToPublic(row) {
     hasPassword: Boolean(row.password_hash),
     hasCursorKey:
       row.role === "executor" && Boolean(row.cursor_api_key_encrypted),
+    isLocked: Boolean(row.locked_at),
+    passwordMustChange: Boolean(row.password_must_change),
     createdAt: row.created_at,
   };
 }
@@ -84,7 +92,8 @@ export function userToPublic(row) {
 export async function listTenantUsers(tenantId) {
   const quota = await getTenantUserQuota(tenantId);
   const { rows } = await query(
-    `SELECT id, email, role, password_hash, cursor_api_key_encrypted, created_at
+    `SELECT id, email, role, password_hash, cursor_api_key_encrypted, created_at,
+            password_must_change, failed_login_attempts, locked_at
      FROM users WHERE tenant_id = $1 ORDER BY email`,
     [tenantId]
   );
@@ -99,14 +108,13 @@ export async function listTenantUsers(tenantId) {
 
 /**
  * @param {string} tenantId
- * @param {{ email: string, role: string, password: string }} input
- * @param {{ allowedRoles?: Set<string> }} [opts]
+ * @param {{ email: string, role: string }} input
+ * @param {{ allowedRoles?: Set<string>, tenantName?: string }} [opts]
  */
 export async function createTenantUser(tenantId, input, opts = {}) {
   await assertCanAddUser(tenantId);
   const email = String(input.email).trim().toLowerCase();
   const role = String(input.role || "").trim();
-  const password = input.password;
 
   if (!email || !ROLES.has(role)) {
     throw Object.assign(new Error("email e role inválidos"), { status: 400 });
@@ -114,22 +122,40 @@ export async function createTenantUser(tenantId, input, opts = {}) {
   if (opts.allowedRoles && !opts.allowedRoles.has(role)) {
     throw Object.assign(new Error("role não permitido"), { status: 403 });
   }
-  if (typeof password !== "string" || password.length < 6) {
-    throw Object.assign(new Error("password obrigatória (mín. 6 caracteres)"), {
-      status: 400,
-    });
-  }
 
-  const passwordHash = hashPassword(password);
   const tutorialPending = role === "executor";
+  const placeholderHash = hashPassword(cryptoRandomPlaceholder());
   try {
     const { rows } = await query(
-      `INSERT INTO users (tenant_id, email, role, password_hash, tutorial_pending)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, email, role, password_hash, cursor_api_key_encrypted, created_at`,
-      [tenantId, email, role, passwordHash, tutorialPending]
+      `INSERT INTO users (tenant_id, email, role, password_hash, tutorial_pending, password_must_change)
+       VALUES ($1, $2, $3, $4, $5, true)
+       RETURNING id, email, role, password_hash, cursor_api_key_encrypted, created_at,
+                 password_must_change, failed_login_attempts, locked_at`,
+      [tenantId, email, role, placeholderHash, tutorialPending]
     );
-    return userToPublic(rows[0]);
+    const user = rows[0];
+    const temporaryPassword = await applyTemporaryPassword(user.id, {
+      mustChange: true,
+      clearFailedAttempts: true,
+    });
+
+    try {
+      await sendUserInvitedEmail({
+        recipientEmail: email,
+        temporaryPassword,
+        tenantName: opts.tenantName,
+        role,
+      });
+    } catch (e) {
+      log.error("Falha ao enviar convite por email", {
+        tenantId,
+        email,
+        error: e.message,
+      });
+    }
+
+    const refreshed = await getUserInTenant(user.id, tenantId);
+    return userToPublic(refreshed || user);
   } catch (e) {
     if (e.code === "23505") {
       throw Object.assign(new Error("Email já registado neste tenant"), {
@@ -138,6 +164,10 @@ export async function createTenantUser(tenantId, input, opts = {}) {
     }
     throw e;
   }
+}
+
+function cryptoRandomPlaceholder() {
+  return `placeholder-${Date.now()}-${Math.random()}`;
 }
 
 /**
@@ -149,7 +179,7 @@ export async function createTenantUser(tenantId, input, opts = {}) {
 export async function updateTenantUserRole(tenantId, userId, patch, opts = {}) {
   const user = await getUserInTenant(userId, tenantId);
   if (!user) {
-    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+    throw Object.assign(new Error("Usuário não encontrado"), { status: 404 });
   }
   const role = String(patch.role || "").trim();
   if (!ROLES.has(role)) {
@@ -186,7 +216,7 @@ export async function updateTenantUserRole(tenantId, userId, patch, opts = {}) {
 export async function deleteTenantUser(tenantId, userId) {
   const user = await getUserInTenant(userId, tenantId);
   if (!user) {
-    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+    throw Object.assign(new Error("Usuário não encontrado"), { status: 404 });
   }
   if (user.role === "auditor") {
     const { rows } = await query(
@@ -211,21 +241,30 @@ export async function deleteTenantUser(tenantId, userId) {
  * @param {string} tenantId
  * @param {string} userId
  * @param {string} password
+ * @param {{ mustChange?: boolean, clearLock?: boolean }} [opts]
  */
-export async function setUserPassword(tenantId, userId, password) {
+export async function setUserPassword(tenantId, userId, password, opts = {}) {
   const user = await getUserInTenant(userId, tenantId);
   if (!user) {
-    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+    throw Object.assign(new Error("Usuário não encontrado"), { status: 404 });
   }
-  if (typeof password !== "string" || password.length < 6) {
-    throw Object.assign(new Error("password inválida (mín. 6 caracteres)"), {
-      status: 400,
-    });
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    throw Object.assign(
+      new Error(`password inválida (mín. ${MIN_PASSWORD_LENGTH} caracteres)`),
+      { status: 400 }
+    );
   }
   const passwordHash = hashPassword(password);
+  const mustChange = opts.mustChange === true;
+  const clearLock = opts.clearLock === true;
   await query(
-    "UPDATE users SET password_hash = $3 WHERE id = $1 AND tenant_id = $2",
-    [userId, tenantId, passwordHash]
+    `UPDATE users SET
+       password_hash = $3,
+       password_must_change = $4,
+       locked_at = CASE WHEN $5 THEN NULL ELSE locked_at END,
+       failed_login_attempts = CASE WHEN $5 THEN 0 ELSE failed_login_attempts END
+     WHERE id = $1 AND tenant_id = $2`,
+    [userId, tenantId, passwordHash, mustChange, clearLock]
   );
   return { ok: true };
 }
@@ -238,7 +277,7 @@ export async function setUserPassword(tenantId, userId, password) {
 export async function setExecutorCursorApiKey(tenantId, userId, cursorApiKey) {
   const user = await getUserInTenant(userId, tenantId);
   if (!user) {
-    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+    throw Object.assign(new Error("Usuário não encontrado"), { status: 404 });
   }
   if (user.role !== "executor") {
     throw Object.assign(new Error("API key só para utilizadores executor"), {
@@ -276,6 +315,7 @@ export async function getExecutorCursorApiKeyDecrypted(userId) {
 export async function loadSessionUser(userId) {
   const { rows } = await query(
     `SELECT u.id, u.email, u.role, u.tenant_id, u.tutorial_pending,
+            u.password_must_change, u.locked_at,
             t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
@@ -291,6 +331,7 @@ export async function loadSessionUser(userId) {
 export async function loadUserByEmail(email) {
   const { rows } = await query(
     `SELECT u.id, u.email, u.role, u.tenant_id, u.password_hash, u.tutorial_pending,
+            u.password_must_change, u.failed_login_attempts, u.locked_at,
             t.plan_active_until, t.name AS tenant_name
      FROM users u
      JOIN tenants t ON t.id = u.tenant_id
@@ -310,7 +351,7 @@ export async function completeUserTutorial(userId) {
     [userId]
   );
   if (!rows[0]) {
-    throw Object.assign(new Error("Utilizador não encontrado"), { status: 404 });
+    throw Object.assign(new Error("Usuário não encontrado"), { status: 404 });
   }
   return { tutorialPending: false };
 }

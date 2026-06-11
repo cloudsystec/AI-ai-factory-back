@@ -555,13 +555,13 @@ function railwayPublishJobErrorMessage(exitCode) {
   if (exitCode === 130) {
     return (
       "A publicação foi interrompida. Aguarde ou clique em Tentar novamente " +
-      "com o worker activo."
+      "com o worker ativo."
     );
   }
   if (exitCode === 1) {
     return (
       "A publicação falhou (agente ou deploy demorou demais). " +
-      "Tente novamente — o worker deve permanecer activo durante todo o processo."
+      "Tente novamente — o worker deve permanecer ativo durante todo o processo."
     );
   }
   if (exitCode != null) {

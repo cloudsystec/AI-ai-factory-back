@@ -1,6 +1,8 @@
 import { WebSocketServer } from "ws";
 import jwt from "jsonwebtoken";
 import { createClient } from "redis";
+import { isPlatformAdminEmail } from "../lib/platform-admin-emails.js";
+import { getTenantBlockState } from "../services/tenant-block-service.js";
 import { createLogger } from "./logger.js";
 import { getRedisUrl } from "./job-log-redis.js";
 
@@ -22,7 +24,11 @@ function authenticateToken(token) {
   try {
     const payload = jwt.verify(token, JWT_SECRET());
     if (!payload.tenantId) return null;
-    return { tenantId: payload.tenantId, userId: payload.userId, email: payload.sub };
+    return {
+      tenantId: payload.tenantId,
+      userId: payload.userId,
+      email: payload.sub,
+    };
   } catch {
     return null;
   }
@@ -75,7 +81,7 @@ export function broadcastWorkersAndJobs(tenantId, projectSlug, enqueued = []) {
 export async function initWsHub(server) {
   wss = new WebSocketServer({ server, path: "/ws" });
 
-  wss.on("connection", (ws, req) => {
+  wss.on("connection", async (ws, req) => {
     const url = new URL(req.url, "http://localhost");
     const token = url.searchParams.get("token");
     const auth = token ? authenticateToken(token) : null;
@@ -83,6 +89,19 @@ export async function initWsHub(server) {
     if (!auth) {
       ws.close(4001, "Unauthorized");
       return;
+    }
+
+    if (!isPlatformAdminEmail(auth.email)) {
+      try {
+        const state = await getTenantBlockState(auth.tenantId);
+        if (state?.blocked) {
+          ws.close(4003, "tenant_blocked");
+          return;
+        }
+      } catch {
+        ws.close(1011, "Error");
+        return;
+      }
     }
 
     ws._tenantId = auth.tenantId;

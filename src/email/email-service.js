@@ -102,3 +102,24 @@ export async function sendTemplatedEmail(templateId, to, data) {
 export async function sendWelcomeEmail(data) {
   return sendTemplatedEmail("welcome", data.recipientEmail, data);
 }
+
+/**
+ * @param {import('./templates/user-invited.js').UserInvitedEmailData} data
+ */
+export async function sendUserInvitedEmail(data) {
+  return sendTemplatedEmail("user-invited", data.recipientEmail, data);
+}
+
+/**
+ * @param {{ recipientEmail: string, temporaryPassword: string, recipientName?: string }} data
+ */
+export async function sendForgotPasswordEmail(data) {
+  return sendTemplatedEmail("password-forgot", data.recipientEmail, data);
+}
+
+/**
+ * @param {{ recipientEmail: string, temporaryPassword: string, recipientName?: string }} data
+ */
+export async function sendPasswordResetTemporaryEmail(data) {
+  return sendTemplatedEmail("password-reset-temporary", data.recipientEmail, data);
+}

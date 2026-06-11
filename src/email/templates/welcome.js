@@ -7,6 +7,11 @@ import {
 import { resolveLoginUrl } from "../email-config.js";
 import { escapeHtml } from "../html-utils.js";
 import { layoutEmail } from "../layout-email.js";
+import { dev4lessSubject } from "../subject.js";
+import {
+  temporaryPasswordHtmlBlock,
+  temporaryPasswordTextLines,
+} from "./temporary-password-block.js";
 
 /**
  * @typedef {Object} WelcomeEmailData
@@ -15,6 +20,7 @@ import { layoutEmail } from "../layout-email.js";
  * @property {string} [companyName]
  * @property {string} [planId]
  * @property {string} [loginUrl]
+ * @property {string} [temporaryPassword]
  */
 
 /**
@@ -24,7 +30,7 @@ import { layoutEmail } from "../layout-email.js";
 export function deriveRecipientName(email) {
   const local = String(email || "").split("@")[0] || "";
   const cleaned = local.replace(/[._+-]+/g, " ").trim();
-  if (!cleaned) return "Utilizador";
+  if (!cleaned) return "Usu\u00e1rio";
   return cleaned
     .split(/\s+/)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
@@ -76,10 +82,11 @@ export function renderWelcomeEmail(raw) {
     resolveLoginUrl(recipientEmail);
   const companyName = String(data.companyName || "").trim() || undefined;
   const planId = String(data.planId || "").trim() || undefined;
+  const temporaryPassword = String(data.temporaryPassword || "").trim();
 
-  const subject = `Bem-vindo ao ${BRAND_NAME} ? a sua conta est? pronta`;
+  const subject = dev4lessSubject("Bem-vindo! Sua conta est\u00e1 pronta");
   const preheader =
-    "A sua conta est? pronta. Entre e crie o primeiro projecto.";
+    "Sua conta est\u00e1 pronta. Use a senha tempor\u00e1ria para entrar.";
 
   const badges = [planBadgeHtml(planId), companyBadgeHtml(companyName)]
     .filter(Boolean)
@@ -87,16 +94,20 @@ export function renderWelcomeEmail(raw) {
   const badgesBlock = badges
     ? `<div style="margin:20px 0 8px 0;">${badges}</div>`
     : "";
+  const tempPasswordBlock = temporaryPassword
+    ? temporaryPasswordHtmlBlock(temporaryPassword)
+    : "";
 
   const bodyHtml = `
     <h1 style="margin:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.3;font-weight:700;color:${BRAND_COLORS.text};">
-      Ol?, ${escapeHtml(recipientName)}!
+      Ol\u00e1, ${escapeHtml(recipientName)}!
     </h1>
     <p style="margin:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:${BRAND_COLORS.muted};">
-      A sua conta no ${escapeHtml(BRAND_NAME)} est? activa. A partir daqui pode criar projectos,
-      acompanhar jobs em tempo real e levar o backlog ao deploy com entregas test?veis.
+      Sua conta no ${escapeHtml(BRAND_NAME)} est\u00e1 ativa. A partir daqui voc\u00ea pode criar projetos,
+      acompanhar jobs em tempo real e levar o backlog ao deploy com entregas test\u00e1veis.
     </p>
     ${badgesBlock}
+    ${tempPasswordBlock}
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0;">
       <tr>
         <td align="center" style="border-radius:8px;background-color:${BRAND_COLORS.accent};">
@@ -107,23 +118,24 @@ export function renderWelcomeEmail(raw) {
       </tr>
     </table>
     <p style="margin:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:${BRAND_COLORS.muted};">
-      Ou aceda directamente:
+      Ou acesse diretamente:
       <a href="${escapeHtml(loginUrl)}" style="color:${BRAND_COLORS.accent};word-break:break-all;">${escapeHtml(loginUrl)}</a>
     </p>
     <p style="margin:24px 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;font-weight:700;color:${BRAND_COLORS.text};">
-      Pr?ximos passos
+      Pr\u00f3ximos passos
     </p>
     <ol style="margin:0;padding:0 0 0 20px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.7;color:${BRAND_COLORS.muted};">
-      <li style="margin-bottom:8px;">Fa?a login com este email (${escapeHtml(recipientEmail)})</li>
-      <li style="margin-bottom:8px;">Crie o primeiro projecto</li>
-      <li style="margin-bottom:0;">Ligue o GitHub (opcional)</li>
+      <li style="margin-bottom:8px;">Fa\u00e7a login com este e-mail (${escapeHtml(recipientEmail)})</li>
+      <li style="margin-bottom:8px;">Defina uma nova senha quando solicitado</li>
+      <li style="margin-bottom:8px;">Crie o primeiro projeto</li>
+      <li style="margin-bottom:0;">Conecte o GitHub (opcional)</li>
     </ol>
   `.trim();
 
   const html = layoutEmail({
     preheader,
     bodyHtml,
-    footerNote: `Este email foi enviado para ${recipientEmail}`,
+    footerNote: `Este e-mail foi enviado para ${recipientEmail}`,
   });
 
   const text = [
@@ -131,20 +143,23 @@ export function renderWelcomeEmail(raw) {
     "",
     BRAND_TAGLINE,
     "",
-    `Ol?, ${recipientName}!`,
+    `Ol\u00e1, ${recipientName}!`,
     "",
-    `A sua conta no ${BRAND_NAME} est? activa. A partir daqui pode criar projectos, acompanhar jobs em tempo real e levar o backlog ao deploy com entregas test?veis.`,
+    `Sua conta no ${BRAND_NAME} est\u00e1 ativa.`,
     companyName ? `Empresa: ${companyName}` : "",
     planId && PLAN_LABELS[planId] ? PLAN_LABELS[planId] : "",
     "",
+    ...(temporaryPassword ? temporaryPasswordTextLines(temporaryPassword) : []),
+    ...(temporaryPassword ? [""] : []),
     `Fazer login: ${loginUrl}`,
     "",
-    "Pr?ximos passos:",
-    `1. Fa?a login com este email (${recipientEmail})`,
-    "2. Crie o primeiro projecto",
-    "3. Ligue o GitHub (opcional)",
+    "Pr\u00f3ximos passos:",
+    `1. Fa\u00e7a login com este e-mail (${recipientEmail})`,
+    "2. Defina uma nova senha quando solicitado",
+    "3. Crie o primeiro projeto",
+    "4. Conecte o GitHub (opcional)",
     "",
-    `Este email foi enviado para ${recipientEmail}`,
+    `Este e-mail foi enviado para ${recipientEmail}`,
   ]
     .filter((line) => line !== "")
     .join("\n");

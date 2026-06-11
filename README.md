@@ -55,7 +55,11 @@ O **cliente** (CLI Docker por tenant) liga-se a esta API com `BACK_URL` e `WORKE
 
 Cadastre no Dashboard: `POST https://<api>/webhooks/stripe` com eventos `checkout.session.completed` e `invoice.paid`.
 
-Variáveis: `STRIPE_WEBHOOK_SECRET` (obrigatório), `STRIPE_SECRET_KEY` (opcional), `STRIPE_DEFAULT_USER_PASSWORD` (só dev).
+Variáveis: `STRIPE_WEBHOOK_SECRET` (obrigatório), `STRIPE_SECRET_KEY` (opcional), `STRIPE_DEFAULT_USER_PASSWORD` (só dev — senha fixa do auditor; em produção deixe vazio para senha aleatória por e-mail).
+
+Após checkout, o cliente recebe e-mail de boas-vindas com **senha temporária** (`password_must_change`). No primeiro login deve definir nova senha (mín. 8 caracteres). Após 5 tentativas falhadas a conta bloqueia (`locked_at`); o auditor desbloqueia ou gera nova senha temporária na gestão de utilizadores. Self-service **Esqueci minha senha** (`POST /api/auth/forgot-password`) envia senha temporária com rate-limit de 15 min (contas bloqueadas não recebem e-mail).
+
+Em produção configure `EMAIL_PROVIDER` (ex.: `postmark`, `ses`) e `EMAIL_FROM` — onboarding e convites dependem do envio de e-mail.
 
 Em cada **Payment Link**, metadata `plan_id`: `starter` | `team` | `scale` | `business`.
 
@@ -66,6 +70,12 @@ Cada webhook processado fica em `stripe_events` com `payload` (JSON completo do 
 Teste local: `stripe listen --forward-to localhost:4000/webhooks/stripe`
 
 Após `checkout.session.completed`, o back enfileira provisionamento do **worker CLI no Railway** (Modelo A: um serviço por tenant). Renovações (`invoice.paid`) **não** reprovisionam worker.
+
+**Admin → Nova empresa** (`POST /admin/tenants`) usa o mesmo pós-criação (`afterTenantCreated`):
+
+- **Dev local** (default): gera `.env` em `TENANT_DATA_DIR/<tenant-id>/` e executa `start-tenant-worker` com `-Build` (Docker).
+- **Produção** (`NODE_ENV=production` + vars Railway): enfileira provisionamento Railway, igual ao Stripe.
+- Override: `WORKER_PROVISION_MODE=local|railway` no `.env`.
 
 ## Worker CLI no Railway (provisionamento automático)
 

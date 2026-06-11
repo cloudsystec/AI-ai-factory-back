@@ -23,7 +23,7 @@ function rethrowPlatformGitAuthError(error) {
     throw Object.assign(
       new Error(
         "GitHub App da plataforma (repo managed): credenciais inválidas. " +
-          "Confira GITHUB_APP_ID, github-app-private-key.pem (chave activa) e " +
+          "Confira GITHUB_APP_ID, github-app-private-key.pem (chave ativa) e " +
           "GITHUB_PLATFORM_INSTALLATION_ID. Isto não é o repositório Git do cliente."
       ),
       { status: 503, code: "platform_github_auth_failed" }
@@ -66,7 +66,7 @@ export async function getGitDisconnectStatus(tenantId, slug) {
     phase = "provisioning";
     if (job?.status === "queued") {
       hint =
-        "Na fila — o worker CLI precisa estar activo para reprovisionar o repo da plataforma.";
+        "Na fila — o worker CLI precisa estar ativo para reprovisionar o repo da plataforma.";
     } else if (job?.status === "running") {
       hint = "A sincronizar o código existente com o repositório managed…";
     } else if (!job) {
@@ -74,7 +74,7 @@ export async function getGitDisconnectStatus(tenantId, slug) {
     }
   } else if (isManagedGitRepoMode(repoMode) && gitStatus === "ready") {
     phase = "ready";
-    hint = "Git da plataforma activo — repositório do cliente desligado.";
+    hint = "Git da plataforma ativo — repositório do cliente desligado.";
   } else if (isClientGitRepoMode(repoMode) && gitStatus === "ready") {
     phase = "client";
   }

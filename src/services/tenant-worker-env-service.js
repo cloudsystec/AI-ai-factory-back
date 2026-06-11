@@ -19,6 +19,45 @@ export function resolveWorkerRedisUrl() {
   );
 }
 
+const DEFAULT_LOCAL_WORKER_BACK_URL = "http://host.docker.internal:4000";
+const DEFAULT_LOCAL_WORKER_REDIS_URL = "redis://host.docker.internal:6379";
+
+function isLocalhostUrl(value) {
+  const url = String(value || "").trim();
+  return !url || url.includes("127.0.0.1") || url.includes("localhost");
+}
+
+function pickLocalWorkerRedisUrl(current) {
+  const candidates = [
+    current,
+    process.env.TENANT_REDIS_URL,
+    process.env.REDIS_URL_DOCKER,
+  ];
+  for (const candidate of candidates) {
+    const url = String(candidate || "").trim();
+    if (url && !isLocalhostUrl(url)) return url;
+  }
+  return DEFAULT_LOCAL_WORKER_REDIS_URL;
+}
+
+/**
+ * Defaults para worker Docker local (container não alcança 127.0.0.1 do host).
+ * @param {Record<string, string>} env
+ */
+export function applyLocalDockerWorkerEnvDefaults(env) {
+  const next = { ...env };
+  if (isLocalhostUrl(next.BACK_URL)) {
+    const back =
+      process.env.LOCAL_WORKER_BACK_URL?.replace(/\/$/, "") ||
+      process.env.WORKER_BACK_URL?.replace(/\/$/, "") ||
+      process.env.PUBLIC_BACK_URL?.replace(/\/$/, "") ||
+      "";
+    next.BACK_URL = isLocalhostUrl(back) ? DEFAULT_LOCAL_WORKER_BACK_URL : back;
+  }
+  next.REDIS_URL = pickLocalWorkerRedisUrl(next.REDIS_URL);
+  return next;
+}
+
 /**
  * Variáveis de ambiente para o worker CLI (Railway ou ficheiro .env local).
  * @param {string} tenantId

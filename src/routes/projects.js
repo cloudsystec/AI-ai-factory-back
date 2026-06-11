@@ -4,7 +4,7 @@ import { query } from "../db/pool.js";
 
 import { isValidProjectSlug } from "../lib/project-slug.js";
 
-import { requireActivePlan, requireAuth, attachCapabilities } from "../middleware/auth.js";
+import { requireActivePlan, requireAuth, attachCapabilities, requirePasswordReady } from "../middleware/auth.js";
 
 import { requireCapability } from "../middleware/permissions.js";
 
@@ -65,7 +65,7 @@ import {
 
 export const projectsRouter = Router();
 
-projectsRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+projectsRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 
 
@@ -353,7 +353,7 @@ projectsRouter.post("/:slug/connect-git", requireCapability("write"), async (req
   if (projRows[0].git_status && projRows[0].git_status !== "not_connected") {
     if (projRows[0].github_repo_mode === "managed") {
       return res.status(409).json({
-        error: "Use migrar GitHub para projectos em modo gerenciado.",
+        error: "Use migrar GitHub para projetos em modo gerenciado.",
         code: "use_migrate_git",
       });
     }

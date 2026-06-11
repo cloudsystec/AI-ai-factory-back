@@ -224,7 +224,7 @@ export async function assertBotsReadyForSlots(tenantId, workerSlots) {
     if (!(await isBotReady(tenantId, slot))) {
       throw Object.assign(
         new Error(
-          `Worker slot ${slot} não configurado. Contacte o administrador da plataforma.`
+          `Worker slot ${slot} não configurado. Contate o administrador da plataforma.`
         ),
         { status: 403, code: "bot_not_configured", workerSlot: slot }
       );
@@ -258,7 +258,7 @@ export async function assertAtLeastOneBotReady(tenantId) {
   if (n < 1) {
     throw Object.assign(
       new Error(
-        "Nenhum bot configurado. Contacte o administrador da plataforma."
+        "Nenhum bot configurado. Contate o administrador da plataforma."
       ),
       { status: 403, code: "bot_not_configured" }
     );

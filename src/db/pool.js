@@ -6,6 +6,17 @@ const { Pool } = pg;
 /** @type {pg.Pool | null} */
 let pool = null;
 
+/** @type {((text: string, params?: unknown[]) => Promise<pg.QueryResult>) | null} */
+let queryOverride = null;
+
+export function __setQueryOverrideForTests(fn) {
+  queryOverride = fn;
+}
+
+export function __resetQueryOverrideForTests() {
+  queryOverride = null;
+}
+
 export function getPool() {
   if (!pool) {
     const url = process.env.DATABASE_URL;
@@ -16,6 +27,7 @@ export function getPool() {
 }
 
 export async function query(text, params) {
+  if (queryOverride) return queryOverride(text, params);
   return getPool().query(text, params);
 }
 

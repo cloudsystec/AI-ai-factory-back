@@ -5,6 +5,7 @@ import {
   requireActivePlan,
   requireAuth,
   attachCapabilities,
+  requirePasswordReady,
 } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
@@ -54,7 +55,7 @@ export async function handleGitHubInstallCallback(req, res) {
 
 githubRouter.get("/callback", handleGitHubInstallCallback);
 
-githubRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+githubRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 githubRouter.get("/status", async (req, res) => {
   const { rows } = await query(

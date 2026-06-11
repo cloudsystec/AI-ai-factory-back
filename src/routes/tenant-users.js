@@ -1,17 +1,21 @@
 import { Router } from "express";
-import { requireActivePlan, requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireActivePlan, requirePasswordReady } from "../middleware/auth.js";
 import { requireCapability } from "../middleware/permissions.js";
 import {
   createTenantUser,
   deleteTenantUser,
   getUserInTenant,
   listTenantUsers,
-  setUserPassword,
   updateTenantUserRole,
 } from "../services/user-service.js";
+import {
+  resetTemporaryPasswordForUser,
+  unlockUser,
+} from "../services/password-security-service.js";
+import { isPlatformAdminEmail } from "../lib/platform-admin-emails.js";
 
 export const tenantUsersRouter = Router();
-tenantUsersRouter.use(requireAuth, requireActivePlan, requireCapability("manageUsers"));
+tenantUsersRouter.use(requireAuth, requirePasswordReady, requireActivePlan, requireCapability("manageUsers"));
 
 const AUDITOR_CREATABLE = new Set(["executor", "viewer"]);
 
@@ -35,9 +39,8 @@ tenantUsersRouter.post("/", async (req, res) => {
       {
         email: req.body?.email,
         role: req.body?.role,
-        password: req.body?.password,
       },
-      { allowedRoles: AUDITOR_CREATABLE }
+      { allowedRoles: AUDITOR_CREATABLE, tenantName: req.user.tenantName }
     );
     res.status(201).json({ user });
   } catch (e) {
@@ -72,25 +75,43 @@ tenantUsersRouter.delete("/:id", async (req, res) => {
   }
 });
 
-tenantUsersRouter.put("/:id/password", async (req, res) => {
+tenantUsersRouter.post("/:id/unlock", async (req, res) => {
   try {
     const target = await getUserInTenant(req.params.id, req.user.tenantId);
     if (!target) {
-      return res.status(404).json({ error: "Utilizador não encontrado" });
+      return res.status(404).json({ error: "Usuário não encontrado" });
     }
-    if (!AUDITOR_CREATABLE.has(target.role)) {
+    if (isPlatformAdminEmail(target.email)) {
+      return res.status(403).json({ error: "Operação não permitida" });
+    }
+    res.json(await unlockUser(req.user.tenantId, req.params.id));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
+  }
+});
+
+tenantUsersRouter.post("/:id/reset-temporary-password", async (req, res) => {
+  try {
+    const target = await getUserInTenant(req.params.id, req.user.tenantId);
+    if (!target) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+    if (isPlatformAdminEmail(target.email)) {
+      return res.status(403).json({ error: "Operação não permitida" });
+    }
+    if (target.id === req.user.id) {
       return res.status(403).json({
-        error: "Auditor só define senha de executor ou visualizador",
+        error: "Você não pode redefinir sua própria senha por este fluxo",
       });
     }
     res.json(
-      await setUserPassword(
+      await resetTemporaryPasswordForUser(
         req.user.tenantId,
-        req.params.id,
-        req.body?.password
+        target.id,
+        target.email
       )
     );
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
   }
 });

@@ -30,7 +30,7 @@ export async function getProjectStatus(tenantId, projectSlug) {
 export async function assertProjectNotCompleted(tenantId, projectSlug) {
   const row = await getProjectStatus(tenantId, projectSlug);
   if (row.status === "completed") {
-    throw Object.assign(new Error("Projeto finalizado — execução desactivada."), {
+    throw Object.assign(new Error("Projeto finalizado — execução desativada."), {
       status: 403,
       code: "project_completed",
     });

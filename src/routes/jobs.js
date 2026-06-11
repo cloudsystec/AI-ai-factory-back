@@ -4,8 +4,10 @@ import {
   requireActivePlan,
   requireAuth,
   attachCapabilities,
+  requirePasswordReady,
 } from "../middleware/auth.js";
-import { getCapabilitiesForUser } from "../services/user-service.js";
+import { getCapabilitiesForUser, loadSessionUser } from "../services/user-service.js";
+import { isUserLocked } from "../services/password-security-service.js";
 import { requireCapability } from "../middleware/permissions.js";
 import { assertExecutorCanRunJobs } from "../services/user-service.js";
 import { assertAtLeastOneBotReady } from "../services/worker-bot-service.js";
@@ -60,7 +62,7 @@ async function jobToJsonWithSlot(row) {
 }
 
 export const jobsRouter = Router();
-jobsRouter.use(requireAuth, attachCapabilities, requireActivePlan);
+jobsRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const LOG_POLL_MS = 2000;
@@ -140,7 +142,9 @@ jobsRouter.get("/:id/log", async (req, res) => {
 
 async function authFromQueryOrHeader(req, res, next) {
   if (req.headers.authorization) {
-    return requireAuth(req, res, () => requireActivePlan(req, res, next));
+    return requireAuth(req, res, () =>
+      requirePasswordReady(req, res, () => requireActivePlan(req, res, next))
+    );
   }
   const token = req.query.token;
   if (!token || typeof token !== "string") {
@@ -148,16 +152,37 @@ async function authFromQueryOrHeader(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    req.user = {
-      id: payload.userId,
-      email: payload.sub,
-      tenantId: payload.tenantId,
-      role: payload.role,
-    };
     if (payload.userId) {
-      req.capabilities = await getCapabilitiesForUser(payload.userId);
+      const user = await loadSessionUser(payload.userId);
+      if (!user) {
+        return res.status(401).json({ error: "Usuário inválido" });
+      }
+      if (isUserLocked(user)) {
+        return res.status(403).json({
+          error: "Conta bloqueada. Contate o auditor da sua empresa.",
+          code: "account_locked",
+        });
+      }
+      req.user = {
+        id: user.id,
+        email: user.email,
+        tenantId: user.tenant_id,
+        tenantName: user.tenant_name || "",
+        role: user.role,
+        tutorialPending: Boolean(user.tutorial_pending),
+        passwordMustChange: Boolean(user.password_must_change),
+      };
+      req.capabilities = await getCapabilitiesForUser(user.id);
+    } else {
+      req.user = {
+        id: null,
+        email: payload.sub,
+        tenantId: payload.tenantId,
+        role: payload.role,
+        passwordMustChange: false,
+      };
     }
-    return requireActivePlan(req, res, next);
+    return requirePasswordReady(req, res, () => requireActivePlan(req, res, next));
   } catch {
     return res.status(401).json({ error: "Token inválido" });
   }
