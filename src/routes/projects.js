@@ -60,12 +60,15 @@ import {
   getPublishStatus,
   startPublishJob,
 } from "../services/project-railway-service.js";
+import { projectScopeEditRouter } from "./project-scope-edit.js";
 
 
 
 export const projectsRouter = Router();
 
 projectsRouter.use(requireAuth, requirePasswordReady, attachCapabilities, requireActivePlan);
+
+projectsRouter.use("/:slug", projectScopeEditRouter);
 
 
 
@@ -697,7 +700,8 @@ projectsRouter.post("/:slug/reset", requireCapability("write"), async (req, res)
 
   try {
 
-    const result = await resetProjectPlanning(req.user.tenantId, slug);
+    const forceStop = req.body?.forceStop === true;
+    const result = await resetProjectPlanning(req.user.tenantId, slug, { forceStop });
 
     res.json(result);
 
@@ -729,7 +733,7 @@ projectsRouter.delete("/:slug", requireCapability("write"), async (req, res) => 
     if (!rows[0]) {
       return res.status(404).json({ error: "Projeto não encontrado" });
     }
-    await resetProjectPlanning(req.user.tenantId, slug).catch(() => {});
+    await resetProjectPlanning(req.user.tenantId, slug, { forceStop: true }).catch(() => {});
     await query("DELETE FROM task_pull_requests WHERE tenant_id = $1 AND project_slug = $2", [req.user.tenantId, slug]).catch(() => {});
     await query("DELETE FROM micro_releases WHERE tenant_id = $1 AND project_slug = $2", [req.user.tenantId, slug]).catch(() => {});
     await query("DELETE FROM jobs WHERE tenant_id = $1 AND project = $2", [req.user.tenantId, slug]).catch(() => {});

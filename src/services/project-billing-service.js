@@ -128,6 +128,23 @@ export async function sumActualCostForProject(tenantId, projectSlug) {
  * @param {string} tenantId
  * @param {string} projectSlug
  */
+export async function sumActualCostForProjectToday(tenantId, projectSlug) {
+  const { rows } = await query(
+    `SELECT COALESCE(SUM(c.cost_base_usd), 0)::numeric AS total
+     FROM billing_ai_calls c
+     JOIN jobs j ON j.id = c.job_id
+     WHERE c.tenant_id = $1 AND j.project_slug = $2
+       AND c.source IS DISTINCT FROM 'skipped'
+       AND c.started_at >= date_trunc('day', now() AT TIME ZONE 'UTC')`,
+    [tenantId, projectSlug]
+  );
+  return Number(rows[0]?.total) || 0;
+}
+
+/**
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
 export async function countBillingCallsForProject(tenantId, projectSlug) {
   const { rows } = await query(
     `SELECT COUNT(*)::int AS total

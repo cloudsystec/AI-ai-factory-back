@@ -14,6 +14,72 @@ import {
   clearProjectDashboard,
   upsertDashboardSnapshot,
 } from "./project-dashboard-service.js";
+import { releaseWorkLocksForJob } from "./work-lock-service.js";
+import { broadcast } from "../lib/ws-hub.js";
+
+/**
+ * Pausa execução, cancela jobs activos/na fila e liberta locks do projecto.
+ * @param {string} tenantId
+ * @param {string} projectSlug
+ */
+export async function forceStopProjectExecution(tenantId, projectSlug) {
+  await query(
+    `INSERT INTO tenant_execution (tenant_id, project_slug, continuous_active, pause_after_current,
+       selected_worker_slots, updated_at)
+     VALUES ($1, $2, false, true, '[]'::jsonb, now())
+     ON CONFLICT (tenant_id, project_slug) DO UPDATE SET
+       continuous_active = false,
+       pause_after_current = true,
+       selected_worker_slots = '[]'::jsonb,
+       updated_at = now()`,
+    [tenantId, projectSlug]
+  );
+
+  const { rows: activeJobs } = await query(
+    `SELECT id FROM jobs
+     WHERE tenant_id = $1 AND project_slug = $2
+       AND status IN ('queued', 'running', 'waiting_input')`,
+    [tenantId, projectSlug]
+  );
+
+  for (const row of activeJobs) {
+    await releaseWorkLocksForJob(row.id);
+    await query(
+      `UPDATE jobs
+       SET status = 'cancelled',
+           finished_at = COALESCE(finished_at, now()),
+           exit_code = COALESCE(exit_code, 130)
+       WHERE id = $1 AND tenant_id = $2`,
+      [row.id, tenantId]
+    );
+  }
+
+  await query(
+    `DELETE FROM work_locks WHERE tenant_id = $1 AND project_slug = $2`,
+    [tenantId, projectSlug]
+  );
+
+  try {
+    const { reconcileTenantSlotsInUse } = await import(
+      "./execution-dispatcher-service.js"
+    );
+    await reconcileTenantSlotsInUse(tenantId);
+  } catch {
+    /* ignore */
+  }
+
+  broadcast(tenantId, {
+    type: "execution",
+    project: projectSlug,
+    continuousActive: false,
+    pauseAfterCurrent: true,
+    selectedWorkerSlots: [],
+  });
+  broadcast(tenantId, { type: "dashboard", project: projectSlug, reason: "force-stop" });
+  broadcast(tenantId, { type: "billing" });
+
+  return { cancelledJobIds: activeJobs.map((r) => r.id) };
+}
 
 /**
  * @param {string} tenantId
@@ -60,8 +126,9 @@ export function resetProjectPlanningOnDisk(tenantId, slug, meta) {
 /**
  * @param {string} tenantId
  * @param {string} slug
+ * @param {{ forceStop?: boolean }} [opts]
  */
-export async function resetProjectPlanning(tenantId, slug) {
+export async function resetProjectPlanning(tenantId, slug, opts = {}) {
   const { rows } = await query(
     "SELECT slug, name, scope_md FROM projects WHERE tenant_id = $1 AND slug = $2",
     [tenantId, slug]
@@ -78,12 +145,15 @@ export async function resetProjectPlanning(tenantId, slug) {
     [tenantId, slug]
   );
   if (activeJobs[0]) {
-    throw Object.assign(
-      new Error(
-        "Há um job em execução neste projeto. Interrompa ou aguarde antes do reset."
-      ),
-      { status: 409, code: "JOB_ACTIVE" }
-    );
+    if (!opts.forceStop) {
+      throw Object.assign(
+        new Error(
+          "Há um job em execução neste projeto. Interrompa ou aguarde antes do reset."
+        ),
+        { status: 409, code: "JOB_ACTIVE" }
+      );
+    }
+    await forceStopProjectExecution(tenantId, slug);
   }
 
   const { name, scopeMd } = await resolveProjectScopeMd(tenantId, project);

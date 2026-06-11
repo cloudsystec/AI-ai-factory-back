@@ -10,7 +10,7 @@ import { readTasksState } from "./task-state-service.js";
  * @param {string} tenantId
  * @param {string} projectSlug
  */
-function readMicrosFromVolume(tenantId, projectSlug) {
+export function readMicrosFromVolume(tenantId, projectSlug) {
   const microPath = path.join(
     tenantWorkspacesDir(tenantId),
     projectSlug,

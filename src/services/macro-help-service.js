@@ -169,7 +169,7 @@ async function createMacroHelpJob(tenantId, projectSlug, userId) {
  * @param {string} prompt
  * @param {string} apiKey
  */
-async function runCursorPrompt(prompt, apiKey) {
+export async function runCursorPrompt(prompt, apiKey) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "macro-help-"));
   try {
     const controller = new AbortController();
