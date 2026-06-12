@@ -691,7 +691,7 @@ export async function updateJobBilling(tenantId, jobId, payload) {
     const chargeDelta = newCc - oldCc;
 
     await client.query(
-      `UPDATE jobs SET cost_base_usd = $3, charge_usd = $4, charge_source = $5, updated_at = now()
+      `UPDATE jobs SET cost_base_usd = $3, charge_usd = $4, charge_source = $5
        WHERE id = $1 AND tenant_id = $2`,
       [jobId, tenantId, newCb, newCc, chargeSource]
     );
