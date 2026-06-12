@@ -55,6 +55,7 @@ import { assertProjectCreationReady } from "../services/macro-help-service.js";
 import {
   assertSessionReady,
   consumeDiscoverySession,
+  promoteDraftProject,
 } from "../services/project-discovery-service.js";
 import { toPublicProjectGit, isManagedGitRepoMode } from "../lib/project-git-public.js";
 import { exportProjectCodeZip } from "../services/project-export-service.js";
@@ -103,6 +104,8 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
   let trimmedName = String(name ?? "").trim();
   let trimmedSlug = String(slug ?? "").trim();
   let trimmedScope = String(scope ?? "").trim();
+  /** @type {string|null} */
+  let draftProjectId = null;
 
   if (sessionId) {
     try {
@@ -110,6 +113,7 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
       trimmedName = fromSession.name;
       trimmedSlug = fromSession.slug;
       trimmedScope = fromSession.scope;
+      draftProjectId = fromSession.projectId;
     } catch (err) {
       return res.status(err.status || 400).json({
         error: err.message,
@@ -146,21 +150,30 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
 
   if (!git || !git.mode) {
 
-    const { rows: existing } = await query(
-      "SELECT slug FROM projects WHERE tenant_id = $1 AND slug = $2",
-      [req.user.tenantId, trimmedSlug]
-    );
-    if (existing[0]) {
-      return res.status(409).json({ error: `Projeto "${trimmedSlug}" já existe.` });
-    }
-
     try {
-      await query(
-        `INSERT INTO projects (
-           tenant_id, slug, name, scope_md, git_status
-         ) VALUES ($1, $2, $3, $4, 'not_connected')`,
-        [req.user.tenantId, trimmedSlug, trimmedName, trimmedScope]
-      );
+      if (draftProjectId) {
+        await promoteDraftProject(req.user.tenantId, draftProjectId, {
+          name: trimmedName,
+          slug: trimmedSlug,
+          scope: trimmedScope,
+        });
+      } else {
+        const { rows: existing } = await query(
+          "SELECT slug FROM projects WHERE tenant_id = $1 AND slug = $2",
+          [req.user.tenantId, trimmedSlug]
+        );
+        if (existing[0]) {
+          return res.status(409).json({ error: `Projeto "${trimmedSlug}" já existe.` });
+        }
+
+        await query(
+          `INSERT INTO projects (
+             tenant_id, slug, name, scope_md, git_status
+           ) VALUES ($1, $2, $3, $4, 'not_connected')`,
+          [req.user.tenantId, trimmedSlug, trimmedName, trimmedScope]
+        );
+      }
+
       await cloneAgentTemplatesToProject(req.user.tenantId, trimmedSlug);
       if (sessionId) {
         await consumeDiscoverySession(req.user.tenantId, sessionId);
@@ -173,13 +186,16 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
       });
     } catch (error) {
       const status = error.status || 500;
-      if (status >= 500) {
+      if (status >= 500 && !draftProjectId) {
         await query(
           "DELETE FROM projects WHERE tenant_id = $1 AND slug = $2",
           [req.user.tenantId, trimmedSlug]
         ).catch(() => {});
       }
-      return res.status(status).json({ error: error.message });
+      return res.status(status).json({
+        error: error.message,
+        code: error.code ?? undefined,
+      });
     }
 
   }
@@ -230,55 +246,61 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
 
 
 
-  const { rows: existing } = await query(
-
-    "SELECT slug FROM projects WHERE tenant_id = $1 AND slug = $2",
-
-    [req.user.tenantId, trimmedSlug]
-
-  );
-
-  if (existing[0]) {
-
-    return res.status(409).json({ error: `Projeto "${trimmedSlug}" já existe.` });
-
+  if (!draftProjectId) {
+    const { rows: existing } = await query(
+      "SELECT slug FROM projects WHERE tenant_id = $1 AND slug = $2",
+      [req.user.tenantId, trimmedSlug]
+    );
+    if (existing[0]) {
+      return res.status(409).json({ error: `Projeto "${trimmedSlug}" já existe.` });
+    }
   }
 
 
 
   try {
 
-    await query(
-
-      `INSERT INTO projects (
-
-         tenant_id, slug, name, scope_md,
-
-         github_repo_full_name, github_default_branch, github_tech_lead_branch,
-
-         github_repo_mode, git_status
-
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'tech-lead', $7, 'pending')`,
-
-      [
-
-        req.user.tenantId,
-
-        trimmedSlug,
-
-        trimmedName,
-
-        trimmedScope,
-
-        repoFullName,
-
-        defaultBranch,
-
-        repoMode,
-
-      ]
-
-    );
+    if (draftProjectId) {
+      await promoteDraftProject(req.user.tenantId, draftProjectId, {
+        name: trimmedName,
+        slug: trimmedSlug,
+        scope: trimmedScope,
+      });
+      await query(
+        `UPDATE projects SET
+           github_repo_full_name = $3,
+           github_default_branch = $4,
+           github_tech_lead_branch = 'tech-lead',
+           github_repo_mode = $5,
+           git_status = 'pending',
+           updated_at = now()
+         WHERE tenant_id = $1 AND id = $2`,
+        [
+          req.user.tenantId,
+          draftProjectId,
+          repoFullName,
+          defaultBranch,
+          repoMode,
+        ]
+      );
+    } else {
+      await query(
+        `INSERT INTO projects (
+           tenant_id, slug, name, scope_md,
+           github_repo_full_name, github_default_branch, github_tech_lead_branch,
+           github_repo_mode, git_status
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'tech-lead', $7, 'pending')`,
+        [
+          req.user.tenantId,
+          trimmedSlug,
+          trimmedName,
+          trimmedScope,
+          repoFullName,
+          defaultBranch,
+          repoMode,
+        ]
+      );
+    }
 
     await cloneAgentTemplatesToProject(req.user.tenantId, trimmedSlug);
 
@@ -320,7 +342,7 @@ projectsRouter.post("/", requireCapability("write"), async (req, res) => {
 
     const status = error.status || 500;
 
-    if (status >= 500) {
+    if (status >= 500 && !draftProjectId) {
 
       await query(
 

@@ -4,6 +4,8 @@ import {
   parseDiscoveryResponse,
   allDiscoveryDecisionsResolved,
   DISCOVERY_TOPIC_KEYS,
+  countUserMessages,
+  buildDraftProjectIdentity,
 } from "./project-discovery-service.js";
 
 function fullDecisions() {
@@ -75,5 +77,39 @@ describe("allDiscoveryDecisionsResolved", () => {
     const partial = fullDecisions();
     partial.backend.resolved = false;
     assert.equal(allDiscoveryDecisionsResolved(partial), false);
+  });
+});
+
+describe("countUserMessages", () => {
+  it("conta apenas mensagens do operador", () => {
+    assert.equal(countUserMessages([]), 0);
+    assert.equal(
+      countUserMessages([
+        { role: "assistant", content: "Olá" },
+        { role: "user", content: "Oi" },
+      ]),
+      1
+    );
+    assert.equal(
+      countUserMessages([
+        { role: "user", content: "A" },
+        { role: "assistant", content: "B" },
+        { role: "user", content: "C" },
+      ]),
+      2
+    );
+  });
+});
+
+describe("buildDraftProjectIdentity", () => {
+  it("gera nome e slug sequenciais", () => {
+    assert.deepEqual(buildDraftProjectIdentity(1), {
+      name: "Draft - #1",
+      slug: "draft-1",
+    });
+    assert.deepEqual(buildDraftProjectIdentity(3), {
+      name: "Draft - #3",
+      slug: "draft-3",
+    });
   });
 });

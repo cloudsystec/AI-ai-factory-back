@@ -50,7 +50,22 @@ describe("project-git-public", () => {
     assert.equal(isManagedGitRepoMode("client"), false);
   });
 
+  it("toPublicProjectGit inclui discoverySessionId", () => {
+    const pub = toPublicProjectGit({
+      slug: "draft-1",
+      name: "Draft - #1",
+      scope_md: "",
+      status: "draft",
+      git_status: "not_connected",
+      discovery_session_id: "sess-uuid",
+    });
+    assert.equal(pub.status, "draft");
+    assert.equal(pub.discoverySessionId, "sess-uuid");
+    assert.equal(pub.lifecycleStatus, "not_started");
+  });
+
   it("deriveProjectLifecycleStatus", () => {
+    assert.equal(deriveProjectLifecycleStatus("draft", null), "not_started");
     assert.equal(deriveProjectLifecycleStatus("completed", null), "completed");
     assert.equal(deriveProjectLifecycleStatus("active", null), "not_started");
     assert.equal(

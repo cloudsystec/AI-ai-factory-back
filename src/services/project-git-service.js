@@ -72,10 +72,13 @@ export async function listProjectsWithGit(tenantId) {
     `SELECT p.slug, p.name, p.scope_md, p.github_default_branch, p.github_repo_full_name,
             p.git_status, p.github_tech_lead_branch, p.github_repo_mode, p.git_last_error,
             p.created_at, p.status, p.completed_at,
-            s.scope_state_json
+            s.scope_state_json,
+            ds.id AS discovery_session_id
      FROM projects p
      LEFT JOIN project_dashboard_snapshots s
        ON s.tenant_id = p.tenant_id AND s.project_slug = p.slug
+     LEFT JOIN project_discovery_sessions ds
+       ON ds.project_id = p.id AND ds.status != 'consumed'
      WHERE p.tenant_id = $1
      ORDER BY p.slug`,
     [tenantId]

@@ -25,6 +25,7 @@ export function isManagedGitRepoMode(repoMode) {
  * @returns {'not_started'|'started'|'completed'}
  */
 export function deriveProjectLifecycleStatus(projectStatus, scopeStateJson) {
+  if (projectStatus === "draft") return "not_started";
   if (projectStatus === "completed") return "completed";
 
   const scope =
@@ -57,6 +58,7 @@ export function toPublicProjectGit(row) {
     completedAt: row.completed_at || null,
     createdAt: row.created_at,
     lifecycleStatus: deriveProjectLifecycleStatus(status, row.scope_state_json),
+    discoverySessionId: row.discovery_session_id || null,
   };
 
   if (isManagedGitRepoMode(repoMode)) {

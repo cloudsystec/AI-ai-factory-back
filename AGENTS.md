@@ -66,8 +66,10 @@ O relatório QA deve preservar o resultado relevante.
 
 Agente: `agents/project-discovery.md` — conduz brainstorm **antes** de `POST /api/projects`.
 
-- Sessão em `project_discovery_sessions`; resposta JSON com `decisions`, `readyToCreate`, `proposedName`, `proposedSlug`, `scopeMd`.
+- Sessão em `project_discovery_sessions`; resposta JSON com `decisions`, `readyToCreate`, `proposedName`, `proposedSlug`, `scopeMd`, `draftProjectSlug`, `hasDraftProject`.
+- Na **primeira mensagem humana** do chat, cria-se automaticamente um projeto `status: draft` (`Draft - #N` / `draft-N`) ligado à sessão via `project_id`.
+- Fechar o modal **sem** mensagem do operador descarta a sessão; com draft criado, sessão e projeto permanecem.
+- Criação final exige `discoverySessionId` com `status: ready`; promove o draft existente para `active` (nome/slug/escopo da sessão).
 - **Nunca assumir** decisões — operador confirma cada item da checklist.
-- Criação exige `discoverySessionId` com `status: ready`; escopo vem da sessão, não do body livre.
 
 Agente `agents/macro-scope-help.md` (MacroHelp) permanece só para **refinar** escopo macro de projetos já existentes.
